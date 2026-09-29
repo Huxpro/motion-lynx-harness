@@ -107,8 +107,21 @@ but none of the conformance layers below were rebased with it, so a
 `pkg.pr.new` preview of #3509 alone would regress the manifest.
 
 The harness therefore measures an exact local build: `main` @ `4f63dfd`
-plus one patch that carries the `013e20e` declarative implementation onto
-the landed API (`vendor/lynx-stack-patches/`). The only semantic adaptation
+plus a patch series in `vendor/lynx-stack-patches/`, one review unit per
+capability:
+
+```text
+main 4f63dfd (MainThreadObject runtime)
+└── 0001 port declarative Motion onto MainThreadObject      (013e20e parity)
+    └── 0002 easing callbacks + ease arrays                 (issue #37)
+        └── 0003 transformTemplate                          (issue #55)
+            └── 0004 AnimatePresence + exit                 (issue #5)
+                └── 0005 variant orchestration, controls,
+                         gesture label propagation          (issue #10)
+```
+
+The first patch carries the `013e20e` declarative implementation onto
+the landed API. The only semantic adaptation
 is that `main` has no `backgroundMethods`, so `useMotionValue` forwards
 background `set()` through `runOnMainThread`. Package 160/160, dual-renderer
 75/75 and portal 8/8 pass on that build.

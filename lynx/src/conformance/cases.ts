@@ -120,7 +120,7 @@ export const WEB_BASELINE = `framer-motion@${UPSTREAM_SOURCE_VERSION}`
  */
 export const LYNX_STACK_BUILD = {
     main: "4f63dfd",
-    motion: "62f8b5e",
+    motion: "db8b8ab",
 } as const
 export const LYNX_BUILD_LABEL = `lynx-stack main ${LYNX_STACK_BUILD.main} + motion ${LYNX_STACK_BUILD.motion}`
 
@@ -1124,8 +1124,8 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         assertions: [
             "the first segment invokes its easing callback",
             "the second segment invokes its easing callback",
-            "a hold-at-start first-segment callback keeps x at the first keyframe through the first half",
-            "an ease-in second-segment callback trails the linear midpoint of its segment",
+            "a hold-at-start first-segment callback keeps x at the first keyframe for at least 700ms of the 1.6s animation",
+            "an ease-in second-segment callback trails linear halfway through its segment (x within 108-142 rather than 150)",
             "both renderers settle at the final keyframe without runtime errors",
         ],
         evidence: {
@@ -1140,7 +1140,6 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             middleX: 100,
             endX: 200,
             holdUntilMs: 700,
-            secondSegmentSampleMs: 1200,
             secondSegmentMinX: 108,
             secondSegmentMaxX: 142,
         },
@@ -2272,36 +2271,229 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         },
     },
     {
-        id: "variants/orchestration",
+        id: "variants/after-children",
         category: "Variants",
-        title: "Remaining variant orchestration + controls",
+        title: "Children finish before the parent",
         summary:
-            "Coordinate descendant variants through aggregate completion, dynamic timing, controls, and gesture state.",
-        status: "blocked",
-        api: [
-            "animation controls",
-            "gesture propagation",
-            "when",
-            "dynamic delayChildren",
-            "staggerChildren",
+            "With when=afterChildren the parent holds until its variant children finish, in both directions.",
+        status: "conformant",
+        api: ["variants", "when: afterChildren"],
+        upstream: source(
+            "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
+            "when: afterChildren works correctly"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "entering: mid-way through the child animation the parent is still at its hidden opacity",
+            "both settle at the visible opacity",
+            "leaving: mid-way through the child animation the parent is still at its visible opacity",
         ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { durationMs: 500, sampleMs: 250 },
+    },
+    {
+        id: "variants/before-children-automatic",
+        category: "Variants",
+        title: "beforeChildren waits for a spring parent",
+        summary:
+            "With when=beforeChildren and an automatic (spring) duration, children start only after the parent really completes.",
+        status: "conformant",
+        api: ["variants", "when: beforeChildren", "spring"],
         upstream: source(
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "when: beforeChildren works correctly"
         ),
         baseline: WEB_BASELINE,
         assertions: [
-            "afterChildren and automatic-duration beforeChildren honor aggregate completion",
-            "dynamic delayChildren and staggerChildren order descendants",
-            "controls and gesture labels propagate through the subtree",
+            "the child keeps its hidden opacity while the parent spring is moving",
+            "the child only reaches its visible opacity once the parent has settled",
         ],
-        gap: "Explicit-duration beforeChildren is split into its own conformant contract. The remaining APIs require a cross-thread visual-element registry and subtree lifecycle aggregation; tracked in issue #10.",
         evidence: {
-            gallery: false,
-            packageTest: false,
-            dualRenderer: false,
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
             native: false,
         },
+        expected: { parentX: 60, settledX: 59 },
+    },
+    {
+        id: "variants/stagger-function",
+        category: "Variants",
+        title: "delayChildren: stagger()",
+        summary:
+            "A stagger() delayChildren function offsets each variant child by its index.",
+        status: "conformant",
+        api: ["variants", "delayChildren", "stagger()"],
+        upstream: source(
+            "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
+            "Child variants correctly calculate delay based on delayChildren: stagger()"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the first child has finished before the second starts",
+            "children become visible in index order at stepMs intervals",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { hiddenOpacity: 0.2, visibleOpacity: 1, stepMs: 300, childMs: 50 },
+    },
+    {
+        id: "variants/stagger-children",
+        category: "Variants",
+        title: "staggerChildren",
+        summary:
+            "Deprecated staggerChildren offsets each variant child by its index.",
+        status: "conformant",
+        api: ["variants", "staggerChildren"],
+        upstream: source(
+            "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
+            "Child variants correctly calculate delay based on staggerChildren (deprecated)"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the first child has finished before the second starts",
+            "children become visible in index order at stepMs intervals",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { stepMs: 300 },
+    },
+    {
+        id: "variants/stagger-transparent",
+        category: "Variants",
+        title: "Transparent stagger order",
+        summary:
+            "Components without variants do not take a stagger slot, and staggerDirection -1 reverses the order.",
+        status: "conformant",
+        api: ["variants", "staggerChildren", "staggerDirection"],
+        upstream: source(
+            "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
+            "components without variants are transparent to stagger order"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "grandchildren behind variant-less wrappers stagger as direct children",
+            "the reverse order is 4, 3, 2, 1 at equal intervals",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { stepMs: 300 },
+    },
+    {
+        id: "controls/start-propagation",
+        category: "Lifecycle",
+        title: "controls.start propagates variants",
+        summary:
+            "controls.start(label) animates the bound component and its variant children, and resolves after they finish.",
+        status: "conformant",
+        api: ["useAnimationControls", "controls.start"],
+        upstream: source(
+            "packages/framer-motion/src/animation/__tests__/index.test.tsx",
+            "propagates variants to children"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the bound parent reaches x 60 and its variant child reaches opacity 1",
+            "the start() promise resolves",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { x: 60 },
+    },
+    {
+        id: "controls/set",
+        category: "Lifecycle",
+        title: "controls.set",
+        summary:
+            "controls.set jumps every bound component to a target without animating.",
+        status: "conformant",
+        api: ["useAnimationControls", "controls.set"],
+        upstream: source(
+            "packages/framer-motion/src/animation/__tests__/index.test.tsx",
+            ".set sets values of bound components"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "both bound components render translateX(40px) without an intermediate value",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { x: 40 },
+    },
+    {
+        id: "gestures/tap-propagation",
+        category: "Gestures",
+        title: "whileTap label propagates",
+        summary:
+            "A whileTap variant label applies to variant children while pressed and unapplies on release.",
+        status: "conformant",
+        api: ["whileTap", "variants"],
+        upstream: source(
+            "packages/framer-motion/src/gestures/__tests__/press.test.tsx",
+            "press gesture variant unapplies children"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "pressing the parent applies the child's pressed opacity",
+            "releasing restores the child's style opacity",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { restOpacity: 0.3, pressedOpacity: 1 },
+    },
+    {
+        id: "gestures/hover-propagation",
+        category: "Gestures",
+        title: "whileHover label propagates",
+        summary:
+            "A whileHover variant label applies to variant children while hovered.",
+        status: "conformant",
+        api: ["whileHover", "variants"],
+        upstream: source(
+            "packages/framer-motion/src/gestures/__tests__/hover.test.tsx",
+            "whileHover propagates to children"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "hovering the parent applies the child's hovered opacity",
+            "leaving restores the child's style opacity",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { restOpacity: 1, hoveredOpacity: 0.2 },
     },
     {
         id: "variants/delay-children",
@@ -2505,7 +2697,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         ),
         baseline: WEB_BASELINE,
         assertions: [
-            "mid-exit x follows custom=2 (target 80) rather than the element's custom=1 (target 40)",
+            "the exit passes x 56 on its way to custom=2's target of 80, beyond the element's own custom=1 target of 40",
         ],
         evidence: {
             gallery: true,
@@ -2713,19 +2905,31 @@ export const INSTANT_TRANSITION_CASE = CONFORMANCE_CASES.find(
     expected: { startX: number; endX: number; sampleMs: number }
 }
 
-const presenceCase = (id: string) =>
+const caseById = (id: string) =>
     CONFORMANCE_CASES.find((item) => item.id === id) as ConformanceCase & {
         expected: Record<string, number>
     }
 
 export const PRESENCE_CASES = {
-    exit: presenceCase("presence/exit"),
-    initialFalse: presenceCase("presence/initial-false"),
-    reenter: presenceCase("presence/reenter"),
-    wait: presenceCase("presence/wait"),
-    noExit: presenceCase("presence/no-exit"),
-    custom: presenceCase("presence/custom"),
-    exitPropagation: presenceCase("presence/exit-propagation"),
+    exit: caseById("presence/exit"),
+    initialFalse: caseById("presence/initial-false"),
+    reenter: caseById("presence/reenter"),
+    wait: caseById("presence/wait"),
+    noExit: caseById("presence/no-exit"),
+    custom: caseById("presence/custom"),
+    exitPropagation: caseById("presence/exit-propagation"),
+}
+
+export const ORCHESTRATION_CASES = {
+    afterChildren: caseById("variants/after-children"),
+    beforeChildrenAutomatic: caseById("variants/before-children-automatic"),
+    staggerFunction: caseById("variants/stagger-function"),
+    staggerChildren: caseById("variants/stagger-children"),
+    staggerTransparent: caseById("variants/stagger-transparent"),
+    controlsStart: caseById("controls/start-propagation"),
+    controlsSet: caseById("controls/set"),
+    tapPropagation: caseById("gestures/tap-propagation"),
+    hoverPropagation: caseById("gestures/hover-propagation"),
 }
 
 export const EASING_FUNCTION_ARRAY_CASE = CONFORMANCE_CASES.find(
@@ -3670,11 +3874,11 @@ export const ATOMIC_CAPABILITIES: readonly AtomicCapability[] = [
         id: "variant-orchestration",
         group: "Variants",
         api: "dynamic delayChildren / staggerChildren / when",
-        status: "blocked",
-        evidence: "planned",
+        status: "supported",
+        evidence: "dual-renderer",
         contract: "Orchestrate descendant animations.",
         boundary:
-            "The Gallery custom-delay example is not parent/child stagger orchestration.",
+            "Stagger order is variant-child mount order; Motion sorts by DOM position, which differs only when children are inserted before existing siblings.",
     },
     {
         id: "while-tap",
@@ -3764,10 +3968,11 @@ export const ATOMIC_CAPABILITIES: readonly AtomicCapability[] = [
         id: "animation-controls",
         group: "Lifecycle",
         api: "AnimationControls",
-        status: "blocked",
-        evidence: "planned",
+        status: "supported",
+        evidence: "dual-renderer",
         contract: "Imperatively start declarative component targets.",
-        boundary: "No declarative controls bridge exists.",
+        boundary:
+            "controls.set applies from the main thread, so bound values update on the next frame rather than synchronously.",
     },
     {
         id: "layout",
@@ -4579,14 +4784,102 @@ export const CONFORMANCE_PRIORITIES: readonly GapPriority[] = [
             "High-value parent-first sequencing reuses upstream value-transition routing and the existing ReactLynx variant context when every parent value has explicit timing.",
     },
     {
-        caseId: "variants/orchestration",
-        importance: 5,
-        platformFit: 2,
-        mts: 2,
-        reactLynx: 4,
+        caseId: "variants/after-children",
+        importance: 4,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 2,
         css: 0,
         rationale:
-            "Controls, gesture propagation, dynamic stagger, and ordered subtree lifecycle still need a cross-thread visual-element registry and aggregation.",
+            "Children report completion from the main thread to a background variant-tree session that gates the parent.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "variants/before-children-automatic",
+        importance: 4,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 2,
+        css: 0,
+        rationale:
+            "The parent's real completion, not a computed duration, releases its children.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "variants/stagger-function",
+        importance: 5,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Stagger index and count come from background variant-child registration.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "variants/stagger-children",
+        importance: 4,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Same registration as delayChildren: stagger().",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "variants/stagger-transparent",
+        importance: 3,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Only components with variants register; others pass their parent's node through.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "controls/start-propagation",
+        importance: 5,
+        platformFit: 4,
+        mts: 0,
+        reactLynx: 2,
+        css: 0,
+        rationale:
+            "Controls drive animate through component state and reuse label propagation.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "controls/set",
+        importance: 3,
+        platformFit: 4,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "set() is start() with an instant transition.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "gestures/tap-propagation",
+        importance: 4,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 2,
+        css: 0,
+        rationale:
+            "Main-thread press state is reported to the variant tree and replayed by inheriting children.",
+        issue: "https://github.com/Huxpro/motion/issues/10",
+    },
+    {
+        caseId: "gestures/hover-propagation",
+        importance: 3,
+        platformFit: 3,
+        mts: 1,
+        reactLynx: 2,
+        css: 0,
+        rationale:
+            "Background hover hit-testing emits to inheriting children; touch-only clients have no hover.",
         issue: "https://github.com/Huxpro/motion/issues/10",
     },
     {
@@ -5868,7 +6161,30 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
             "presence/exit-propagation",
         ],
         lossBefore: 4,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 2,
         note: "I5/F4 · lynx-stack patch 62f8b5e adds AnimatePresence: removed keyed children stay rendered in a presence context, Motion components register with their presence child and animate their own exit or an inherited exit label, and the child is released when every member settles (immediately when nothing animates) · the single mislabelled presence contract is split into seven source-linked AnimatePresence tests (tracked 76 → 82) · package presence tests 7/7, full package 175/175; the testing bridge drops deferred runOnBackground calls, so release after an animated exit is proven by the dual-renderer suite, which passes all seven cases in Web and Lynx for Web · popLayout remains out of scope with layout projection.",
+    },
+    {
+        id: "lynx-motion-orchestration",
+        date: "2026-09-29",
+        title: "Variant orchestration, controls and gesture propagation",
+        kind: "capability",
+        status: "verified",
+        motionPr: 108,
+        issue: 10,
+        caseIds: [
+            "variants/after-children",
+            "variants/before-children-automatic",
+            "variants/stagger-function",
+            "variants/stagger-children",
+            "variants/stagger-transparent",
+            "controls/start-propagation",
+            "controls/set",
+            "gestures/tap-propagation",
+            "gestures/hover-propagation",
+        ],
+        lossBefore: 2,
+        lossAfter: WEIGHTED_LOSS,
+        note: "I5/F4 · lynx-stack patch db8b8ab mirrors Motion's variant tree in the background: variant children register with their closest variant node in mount order (variant-less components stay transparent) for stagger index/total, and each node opens a completion session per resolved definition, settled from the main thread, so afterChildren waits for its subtree and automatic-duration beforeChildren waits for the parent's real completion · useAnimationControls drives animate through component state and resolves start() on the session · whileTap/whileHover labels propagate through the same tree · stagger() is callable from render code and still serializes as its Main Thread Function · the bundled orchestration contract is split into nine source-linked upstream tests (tracked 82 → 90), all passing in Web and Lynx for Web; package 182/182 · timing-sensitive specs now sample from the click instead of fixed delays, which also removes a pre-existing display-exit race · the remaining partial case is native-only CSS custom properties.",
     },
 ]

@@ -49,6 +49,7 @@ import {
     UPSTREAM_SOURCE_VERSION,
     WEB_BASELINE,
 } from "../../src/conformance/cases"
+import { OrchestrationScene } from "./orchestration-scene"
 import { PresenceScene } from "./presence-scene"
 
 /**
@@ -1256,6 +1257,9 @@ export function App() {
                     )}
 
                     {conformanceMode === "presence" && <PresenceScene />}
+                    {conformanceMode === "orchestration" && (
+                        <OrchestrationScene />
+                    )}
 
                     {easingFunctionArrayMode && (
                         <div

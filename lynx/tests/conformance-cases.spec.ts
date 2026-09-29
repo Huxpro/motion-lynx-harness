@@ -2,6 +2,7 @@ import { expect, test, type Browser, type Locator, type Page } from "@playwright
 
 import {
     EASING_FUNCTION_ARRAY_CASE,
+    ORCHESTRATION_CASES,
     PRESENCE_CASES,
     TRANSFORM_TEMPLATE_CASE,
 } from "../src/conformance/cases.js"
@@ -45,6 +46,17 @@ async function openCase(browser: Browser, mode: string) {
         lynxPage.goto(`http://localhost:3000${previewUrl}`),
         webPage.goto(`http://localhost:4173/?mode=baseline&case=${mode}`),
     ])
+    // Lynx for Web hydrates main-thread refs after first paint; interacting
+    // earlier drops the event.
+    await expect(
+        lynxPage.locator('[has-react-ref="true"]').first()
+    ).toBeAttached()
+    await lynxPage.evaluate(
+        () =>
+            new Promise<void>((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+            )
+    )
     return {
         renderers: [
             ["Lynx", lynxPage],
@@ -100,19 +112,27 @@ test("manifest case: easing callbacks shape each keyframe segment", async ({
                         { capture: true, once: true }
                     )
                 }),
-            expected.durationMs + 300
+            expected.durationMs + 800
         )
         await example.click()
         const samples = await sampling
 
-        const held = samples.filter(([elapsed]) => elapsed < expected.holdUntilMs)
+        // The first segment holds x at its start keyframe, so the first frame
+        // that moves marks the second segment's start. Latency can only
+        // delay it, never bring it forward.
+        const moving = samples.findIndex(
+            ([, x]) => Math.abs(x - expected.startX) >= 0.5
+        )
+        expect(moving, `${renderer} animation reached segment two`).toBeGreaterThan(0)
+        const [secondSegmentStart] = samples[moving]!
         expect(
-            held.every(([, x]) => Math.abs(x - expected.startX) < 0.5),
-            `${renderer} first segment holds: ${JSON.stringify(held.slice(-3))}`
-        ).toBe(true)
+            secondSegmentStart,
+            `${renderer} first segment holds: ${JSON.stringify(samples[moving])}`
+        ).toBeGreaterThanOrEqual(expected.holdUntilMs)
+        const halfSegment = expected.durationMs / 4
         const [, secondSegmentX] = samples.reduce((closest, current) =>
-            Math.abs(current[0] - expected.secondSegmentSampleMs) <
-            Math.abs(closest[0] - expected.secondSegmentSampleMs)
+            Math.abs(current[0] - secondSegmentStart - halfSegment) <
+            Math.abs(closest[0] - secondSegmentStart - halfSegment)
                 ? current
                 : closest
         )
@@ -290,18 +310,42 @@ test.describe("AnimatePresence", () => {
     test("manifest case: exit variants use AnimatePresence custom", async ({
         browser,
     }) => {
-        const expected = PRESENCE_CASES.custom.expected
         const scene = await openCase(browser, "presence")
         for (const [renderer, page] of scene.renderers) {
             const target = page.locator("#target-presence-custom")
             await expect.poll(async () => (await translate(target)).x).toBe(0)
-            await page.locator("#example-presence-custom").click()
-            await page.waitForTimeout(expected.sampleMs)
-            const { x } = await translate(target)
-            expect(x, `${renderer} custom=2 exit progress`).toBeGreaterThanOrEqual(
-                expected.minX
+            // Track x until the child is released: custom=2 exits to 80,
+            // while the element's own custom=1 would stop at 40.
+            const peak = target.evaluate(
+                (element) =>
+                    new Promise<number>((resolve) => {
+                        let maximum = 0
+                        document.addEventListener(
+                            "click",
+                            () => {
+                                const sample = () => {
+                                    if (!element.isConnected) {
+                                        resolve(maximum)
+                                        return
+                                    }
+                                    maximum = Math.max(
+                                        maximum,
+                                        new DOMMatrixReadOnly(
+                                            getComputedStyle(element).transform
+                                        ).m41
+                                    )
+                                    requestAnimationFrame(sample)
+                                }
+                                sample()
+                            },
+                            { capture: true, once: true }
+                        )
+                    })
             )
-            expect(x).toBeLessThanOrEqual(expected.maxX)
+            await page.locator("#example-presence-custom").click()
+            expect(await peak, `${renderer} custom=2 exit target`).toBeGreaterThan(
+                PRESENCE_CASES.custom.expected.maxX
+            )
         }
         expect(scene.errors).toEqual([])
         await scene.close()
@@ -324,6 +368,305 @@ test.describe("AnimatePresence", () => {
             await expect(target, `${renderer} subtree released`).toHaveCount(0, {
                 timeout: 3_000,
             })
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+})
+
+/**
+ * Sample the opacity of several targets on every frame, starting from the
+ * click on `trigger`, so both renderers share a time base.
+ */
+async function sampleOpacities(
+    page: Page,
+    trigger: Locator,
+    ids: readonly string[],
+    durationMs: number
+) {
+    const sampling = page.evaluate(
+        ([targetIds, total]) =>
+            new Promise<{ t: number; values: number[] }[]>((resolve) => {
+                const find = (id: string): Element | null => {
+                    const visit = (root: Document | ShadowRoot): Element | null => {
+                        const found = root.getElementById?.(id) ?? root.querySelector(`#${id}`)
+                        if (found) return found
+                        for (const element of root.querySelectorAll("*")) {
+                            if (element.shadowRoot) {
+                                const nested = visit(element.shadowRoot)
+                                if (nested) return nested
+                            }
+                        }
+                        return null
+                    }
+                    return visit(document)
+                }
+                const elements = (targetIds as string[]).map(find)
+                const samples: { t: number; values: number[] }[] = []
+                document.addEventListener(
+                    "click",
+                    () => {
+                        const startedAt = performance.now()
+                        const sample = () => {
+                            const t = performance.now() - startedAt
+                            samples.push({
+                                t,
+                                values: elements.map((element) =>
+                                    element
+                                        ? Number(getComputedStyle(element).opacity)
+                                        : Number.NaN
+                                ),
+                            })
+                            t > (total as number)
+                                ? resolve(samples)
+                                : requestAnimationFrame(sample)
+                        }
+                        sample()
+                    },
+                    { capture: true, once: true }
+                )
+            }),
+        [ids, durationMs] as const
+    )
+    await trigger.click()
+    return sampling
+}
+
+/** The first time each target reaches `threshold`, in ms after the click. */
+function firstReached(
+    samples: { t: number; values: number[] }[],
+    threshold: number
+) {
+    return samples[0]!.values.map((_, index) => {
+        const hit = samples.find((sample) => sample.values[index]! >= threshold)
+        return hit ? hit.t : Number.POSITIVE_INFINITY
+    })
+}
+
+async function press(page: Page, isLynx: boolean, target: Locator) {
+    await target.scrollIntoViewIfNeeded()
+    await target.hover()
+    const box = (await target.boundingBox())!
+    if (isLynx) {
+        const cdp = await page.context().newCDPSession(page)
+        await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchStart",
+            touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }],
+        })
+        return async () => {
+            await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchEnd",
+                touchPoints: [],
+            })
+            await cdp.detach()
+        }
+    }
+    await page.mouse.down()
+    return () => page.mouse.up()
+}
+
+test.describe("variant orchestration", () => {
+    const { staggerFunction } = ORCHESTRATION_CASES
+    const { stepMs, hiddenOpacity, visibleOpacity } = staggerFunction.expected
+
+    test("manifest case: afterChildren holds the parent until children finish", async ({
+        browser,
+    }) => {
+        const { durationMs } = ORCHESTRATION_CASES.afterChildren.expected
+        const scene = await openCase(browser, "orchestration")
+        const ids = ["target-orch-after-parent", "target-orch-after-child"]
+        for (const [renderer, page] of scene.renderers) {
+            const example = page.locator("#example-orch-after-children")
+            await expect
+                .poll(() => opacity(page.locator("#target-orch-after-child")))
+                .toBe(hiddenOpacity)
+            for (const [from, to] of [
+                [hiddenOpacity, visibleOpacity],
+                [visibleOpacity, hiddenOpacity],
+            ] as const) {
+                const samples = await sampleOpacities(
+                    page,
+                    example,
+                    ids,
+                    durationMs * 3
+                )
+                const childMoving = samples.filter(
+                    ({ values: [, child] }) => child !== from && child !== to
+                )
+                expect(childMoving.length, `${renderer} child animates`).toBeGreaterThan(0)
+                expect(
+                    childMoving.every(({ values: [parent] }) => parent === from),
+                    `${renderer} ${ORCHESTRATION_CASES.afterChildren.upstream.testName}: parent waits for ${to}`
+                ).toBe(true)
+                const last = samples.at(-1)!.values
+                expect(last, `${renderer} both settle at ${to}`).toEqual([to, to])
+            }
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: automatic-duration beforeChildren waits for the parent", async ({
+        browser,
+    }) => {
+        const { settledX } = ORCHESTRATION_CASES.beforeChildrenAutomatic.expected
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            const parent = page.locator("#target-orch-before-parent")
+            const child = page.locator("#target-orch-before-child")
+            await expect.poll(() => opacity(child)).toBe(hiddenOpacity)
+            await page.locator("#example-orch-before-children").click()
+            // Poll until the child is revealed and record the parent position.
+            let parentXAtReveal = Number.NaN
+            await expect
+                .poll(
+                    async () => {
+                        const childOpacity = await opacity(child)
+                        if (childOpacity === visibleOpacity) {
+                            parentXAtReveal = (await translate(parent)).x
+                        } else {
+                            expect((await translate(parent)).x >= 0).toBe(true)
+                        }
+                        return childOpacity
+                    },
+                    { timeout: 6_000, intervals: [16] }
+                )
+                .toBe(visibleOpacity)
+            expect(
+                parentXAtReveal,
+                `${renderer} ${ORCHESTRATION_CASES.beforeChildrenAutomatic.upstream.testName}`
+            ).toBeGreaterThanOrEqual(settledX)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    for (const [name, key, prefix] of [
+        ["delayChildren: stagger() offsets children by index", "staggerFunction", "target-orch-stagger-function-"],
+        ["staggerChildren offsets children by index", "staggerChildren", "target-orch-stagger-children-"],
+    ] as const) {
+        test(`manifest case: ${name}`, async ({ browser }) => {
+            const scene = await openCase(browser, "orchestration")
+            for (const [renderer, page] of scene.renderers) {
+                const ids = [0, 1, 2].map((index) => `${prefix}${index}`)
+                await expect.poll(() => opacity(page.locator(`#${ids[0]}`))).toBe(hiddenOpacity)
+                const example = page.locator(
+                    key === "staggerFunction"
+                        ? "#example-orch-stagger-function"
+                        : "#example-orch-stagger-children"
+                )
+                const samples = await sampleOpacities(page, example, ids, stepMs * 3 + 300)
+                const reached = firstReached(samples, visibleOpacity)
+                expect(reached.every(Number.isFinite), `${renderer} all revealed`).toBe(true)
+                for (let index = 1; index < reached.length; index++) {
+                    const gap = reached[index]! - reached[index - 1]!
+                    expect(gap, `${renderer} ${ORCHESTRATION_CASES[key].upstream.testName} gap ${index}`).toBeGreaterThan(stepMs * 0.6)
+                    expect(gap).toBeLessThan(stepMs * 1.4)
+                }
+            }
+            expect(scene.errors).toEqual([])
+            await scene.close()
+        })
+    }
+
+    test("manifest case: components without variants are transparent to stagger order", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            const ids = [1, 2, 3, 4].map((index) => `target-orch-transparent-${index}`)
+            await expect.poll(() => opacity(page.locator(`#${ids[0]}`))).toBe(hiddenOpacity)
+            const samples = await sampleOpacities(
+                page,
+                page.locator("#example-orch-stagger-transparent"),
+                ids,
+                stepMs * 4 + 300
+            )
+            const reached = firstReached(samples, visibleOpacity)
+            const order = [...reached.keys()].sort((a, b) => reached[a]! - reached[b]!)
+            expect(order.map((index) => index + 1), `${renderer} reverse order`).toEqual([4, 3, 2, 1])
+            for (let index = 1; index < order.length; index++) {
+                const gap = reached[order[index]!]! - reached[order[index - 1]!]!
+                expect(gap, `${renderer} equal stagger gap`).toBeGreaterThan(stepMs * 0.6)
+                expect(gap).toBeLessThan(stepMs * 1.4)
+            }
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+})
+
+test.describe("animation controls", () => {
+    test("manifest case: controls.start propagates variants and resolves", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            await page.locator("#example-orch-controls").click()
+            await expect(page.locator("#orch-controls-status"), `${renderer} start() resolves`).toHaveText("resolved", { timeout: 4_000 })
+            expect((await translate(page.locator("#target-orch-controls-parent"))).x).toBe(
+                ORCHESTRATION_CASES.controlsStart.expected.x
+            )
+            expect(await opacity(page.locator("#target-orch-controls-child"))).toBe(1)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: controls.set jumps bound components", async ({
+        browser,
+    }) => {
+        const { x } = ORCHESTRATION_CASES.controlsSet.expected
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            const targets = ["#target-orch-set-a", "#target-orch-set-b"].map((id) =>
+                page.locator(id)
+            )
+            await page.locator("#example-orch-controls-set").click()
+            for (const target of targets) {
+                await expect.poll(async () => (await translate(target)).x, { message: renderer }).toBe(x)
+            }
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+})
+
+test.describe("gesture variant propagation", () => {
+    test("manifest case: a whileTap label applies and unapplies children", async ({
+        browser,
+    }) => {
+        const { restOpacity, pressedOpacity } = ORCHESTRATION_CASES.tapPropagation.expected
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            const parent = page.locator("#target-orch-tap-parent")
+            const child = page.locator("#target-orch-tap-child")
+            await expect.poll(() => opacity(child)).toBe(restOpacity)
+            const release = await press(page, renderer === "Lynx", parent)
+            await expect.poll(() => opacity(child), { message: `${renderer} pressed` }).toBe(pressedOpacity)
+            await release()
+            await page.mouse.move(0, 0)
+            await expect.poll(() => opacity(child), { message: `${renderer} released` }).toBe(restOpacity)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: a whileHover label propagates to children", async ({
+        browser,
+    }) => {
+        const { restOpacity, hoveredOpacity } = ORCHESTRATION_CASES.hoverPropagation.expected
+        const scene = await openCase(browser, "orchestration")
+        for (const [renderer, page] of scene.renderers) {
+            // Hover hit-testing in Lynx for Web uses layout rects that do not
+            // track scrolling, so this card is rendered first to stay in view.
+            const parent = page.locator("#target-orch-hover-parent")
+            const child = page.locator("#target-orch-hover-child")
+            await expect.poll(() => opacity(child)).toBe(restOpacity)
+            await parent.hover()
+            await expect.poll(() => opacity(child), { message: `${renderer} hovered` }).toBe(hoveredOpacity)
+            await page.mouse.move(0, 0)
+            await expect.poll(() => opacity(child), { message: `${renderer} left` }).toBe(restOpacity)
         }
         expect(scene.errors).toEqual([])
         await scene.close()

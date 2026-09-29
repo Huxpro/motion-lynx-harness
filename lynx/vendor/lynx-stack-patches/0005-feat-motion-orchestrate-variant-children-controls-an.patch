@@ -1,0 +1,1448 @@
+From db8b8abbe8bafb018ce135492298ec07f90f8c08 Mon Sep 17 00:00:00 2001
+From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 12:37:27 +0000
+Subject: [PATCH 5/5] feat(motion): orchestrate variant children, controls and
+ gestures
+
+Mirror Motion's variant tree in the background: variant children register
+with their closest variant node in mount order (components without
+variants stay transparent), giving stagger index/total for
+delayChildren: stagger(), staggerChildren and staggerDirection. Every
+node opens a completion session per resolved definition, settled from the
+main thread, so afterChildren waits for its subtree and automatic-duration
+beforeChildren waits for the parent's real completion.
+
+Add useAnimationControls/useAnimation for animate={controls}; start()
+resolves once the bound components and their variant children finish, and
+set() jumps without animating. whileTap/whileHover variant labels now
+propagate to variant children through the same tree. stagger() is callable
+from render code and still serializes as its Main Thread Function.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .changeset/motion-orchestration.md            |   5 +
+ .../motion/__tests__/declarative.test.tsx     |  15 +-
+ .../motion/__tests__/orchestration.test.tsx   | 250 +++++++++
+ packages/motion/src/animation/index.ts        |  15 +-
+ .../src/declarative/animationControls.ts      | 105 ++++
+ packages/motion/src/declarative/motion.tsx    | 510 +++++++++++++-----
+ packages/motion/src/declarative/types.ts      |   6 +-
+ .../motion/src/declarative/variantTree.ts     | 134 +++++
+ packages/motion/src/index.ts                  |   6 +
+ 9 files changed, 908 insertions(+), 138 deletions(-)
+ create mode 100644 .changeset/motion-orchestration.md
+ create mode 100644 packages/motion/__tests__/orchestration.test.tsx
+ create mode 100644 packages/motion/src/declarative/animationControls.ts
+ create mode 100644 packages/motion/src/declarative/variantTree.ts
+
+diff --git a/.changeset/motion-orchestration.md b/.changeset/motion-orchestration.md
+new file mode 100644
+index 000000000..f517ac4aa
+--- /dev/null
++++ b/.changeset/motion-orchestration.md
+@@ -0,0 +1,5 @@
++---
++"@lynx-js/motion": patch
++---
++
++Complete declarative variant orchestration: `delayChildren: stagger()`, `staggerChildren`/`staggerDirection` (components without variants are transparent to stagger order), `when: "afterChildren"`, and `when: "beforeChildren"` with automatic durations now wait for real completion. Add `useAnimationControls`/`useAnimation` for `animate={controls}` with variant propagation, and propagate `whileTap`/`whileHover` variant labels to variant children. `stagger()` can now also be called from render code.
+diff --git a/packages/motion/__tests__/declarative.test.tsx b/packages/motion/__tests__/declarative.test.tsx
+index 535335456..af8547b59 100644
+--- a/packages/motion/__tests__/declarative.test.tsx
++++ b/packages/motion/__tests__/declarative.test.tsx
+@@ -548,7 +548,7 @@ describe('declarative Motion', () => {
+     expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
+   });
+ 
+-  test('does not claim beforeChildren when one value has automatic timing', async () => {
++  test('waits for an automatic-duration parent before starting children', async () => {
+     const { getByTestId } = render(
+       <motion.view
+         initial='hidden'
+@@ -581,7 +581,11 @@ describe('declarative Motion', () => {
+     await act(async () => {
+       await new Promise(resolve => setTimeout(resolve, 30));
+     });
+-    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    // Release after the parent's real completion is covered by the
++    // dual-renderer harness; the testing bridge drops that deferred signal.
++    expect(getByTestId('child').getAttribute('style')).not.toContain(
++      'opacity: 1',
++    );
+   });
+ 
+   test('waits for a finite repeating parent before starting children', async () => {
+@@ -655,7 +659,7 @@ describe('declarative Motion', () => {
+     expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
+   });
+ 
+-  test('does not claim infinite beforeChildren completion timing', async () => {
++  test('holds children behind an infinitely repeating beforeChildren parent', async () => {
+     const { getByTestId } = render(
+       <motion.view
+         initial='hidden'
+@@ -687,7 +691,10 @@ describe('declarative Motion', () => {
+     await act(async () => {
+       await new Promise(resolve => setTimeout(resolve, 30));
+     });
+-    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    // An infinite parent never completes, so its children never start.
++    expect(getByTestId('child').getAttribute('style')).not.toContain(
++      'opacity: 1',
++    );
+   });
+ 
+   test('explicit child animate starts a new delayChildren root', async () => {
+diff --git a/packages/motion/__tests__/orchestration.test.tsx b/packages/motion/__tests__/orchestration.test.tsx
+new file mode 100644
+index 000000000..ea3c90c7d
+--- /dev/null
++++ b/packages/motion/__tests__/orchestration.test.tsx
+@@ -0,0 +1,250 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import { beforeEach, describe, expect, test } from 'vitest';
++
++import { useEffect } from '@lynx-js/react';
++import { act, fireEvent, render } from '@lynx-js/react/testing-library';
++
++import { motion, stagger, useAnimationControls } from '../src/index.js';
++import type { MotionVariants } from '../src/declarative/types.js';
++import { ElementCompt } from '../src/polyfill/element.js';
++
++const wait = (ms: number) =>
++  act(async () => {
++    await new Promise(resolve => setTimeout(resolve, ms));
++  });
++
++const opacityOf = (element: Element) =>
++  Number(/opacity: ([\d.]+)/.exec(element.getAttribute('style') ?? '')?.[1]);
++
++// Children hold opacity 0 until their stagger delay passes, then jump to 1.
++const childVariants: MotionVariants = {
++  hidden: { opacity: 0 },
++  visible: { opacity: 1, transition: { duration: 0.01 } },
++};
++
++describe('variant orchestration', () => {
++  beforeEach(() => {
++    globalThis.SystemInfo = { platform: 'web' } as typeof SystemInfo;
++    globalThis.NodeList ??= class NodeList {} as typeof NodeList;
++    globalThis.SVGElement ??= class SVGElement {} as typeof SVGElement;
++    globalThis.Element = ElementCompt as unknown as typeof Element;
++    globalThis.HTMLElement = ElementCompt as unknown as typeof HTMLElement;
++    globalThis.EventTarget = ElementCompt as unknown as typeof EventTarget;
++  });
++
++  test('delayChildren: stagger() offsets each variant child', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: {},
++          visible: { transition: { delayChildren: stagger(0.15) } },
++        }}
++      >
++        <motion.view data-testid='a' variants={childVariants} />
++        <motion.view data-testid='b' variants={childVariants} />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await wait(80);
++    expect(opacityOf(getByTestId('a'))).toBe(1);
++    expect(opacityOf(getByTestId('b'))).toBe(0);
++    await wait(150);
++    expect(opacityOf(getByTestId('b'))).toBe(1);
++  });
++
++  test('staggerChildren offsets each variant child', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: {},
++          visible: { transition: { staggerChildren: 0.15 } },
++        }}
++      >
++        <motion.view data-testid='a' variants={childVariants} />
++        <motion.view data-testid='b' variants={childVariants} />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await wait(80);
++    expect(opacityOf(getByTestId('a'))).toBe(1);
++    expect(opacityOf(getByTestId('b'))).toBe(0);
++    await wait(150);
++    expect(opacityOf(getByTestId('b'))).toBe(1);
++  });
++
++  test('components without variants are transparent to stagger order', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          visible: {
++            transition: { staggerChildren: 0.1, staggerDirection: -1 },
++          },
++        }}
++      >
++        <motion.view>
++          <motion.view />
++          <motion.view data-testid='1' variants={childVariants} />
++          <motion.view data-testid='2' variants={childVariants} />
++        </motion.view>
++        <motion.view>
++          <motion.view data-testid='3' variants={childVariants} />
++          <motion.view data-testid='4' variants={childVariants} />
++        </motion.view>
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    // Reverse order: 4 at 0ms, 3 at 100ms, 2 at 200ms, 1 at 300ms.
++    await wait(50);
++    expect(['1', '2', '3', '4'].map(id => opacityOf(getByTestId(id))))
++      .toEqual([0, 0, 0, 1]);
++    await wait(100);
++    expect(['1', '2', '3', '4'].map(id => opacityOf(getByTestId(id))))
++      .toEqual([0, 0, 1, 1]);
++    await wait(200);
++    expect(['1', '2', '3', '4'].map(id => opacityOf(getByTestId(id))))
++      .toEqual([1, 1, 1, 1]);
++  });
++
++  test('afterChildren holds the parent while children animate', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='parent'
++        initial={{ opacity: 0 }}
++        animate='visible'
++        variants={{
++          visible: {
++            opacity: 1,
++            transition: { duration: 0.01, when: 'afterChildren' },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          initial={{ opacity: 0 }}
++          variants={{
++            visible: { opacity: 1, transition: { duration: 0.01 } },
++          }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await wait(60);
++    expect(opacityOf(getByTestId('child'))).toBe(1);
++    // The parent starts from the children's completion signal, which the
++    // testing bridge does not deliver; the dual-renderer harness covers it.
++    expect(opacityOf(getByTestId('parent'))).toBe(0);
++  });
++});
++
++describe('animation controls', () => {
++  beforeEach(() => {
++    globalThis.SystemInfo = { platform: 'web' } as typeof SystemInfo;
++    globalThis.Element = ElementCompt as unknown as typeof Element;
++    globalThis.HTMLElement = ElementCompt as unknown as typeof HTMLElement;
++    globalThis.EventTarget = ElementCompt as unknown as typeof EventTarget;
++  });
++
++  test('start animates bound components and their variant children', async () => {
++    function App() {
++      const controls = useAnimationControls();
++      useEffect(() => {
++        void controls.start('foo');
++      }, []);
++      return (
++        <motion.view
++          data-testid='parent'
++          animate={controls}
++          variants={{ foo: { x: 100, transition: { duration: 0.01 } } }}
++        >
++          <motion.view
++            data-testid='child'
++            variants={{
++              foo: { opacity: 0.4, transition: { duration: 0.01 } },
++            }}
++          />
++        </motion.view>
++      );
++    }
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(80);
++    expect(getByTestId('parent').getAttribute('style')).toContain(
++      'translateX(100px)',
++    );
++    expect(opacityOf(getByTestId('child'))).toBe(0.4);
++  });
++
++  test('set jumps every bound component without animating', async () => {
++    function App() {
++      const controls = useAnimationControls();
++      useEffect(() => {
++        controls.set({ x: 1 });
++      }, []);
++      return (
++        <view>
++          <motion.view data-testid='a' animate={controls} />
++          <motion.view data-testid='b' animate={controls} />
++        </view>
++      );
++    }
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(20);
++    for (const id of ['a', 'b']) {
++      expect(getByTestId(id).getAttribute('style')).toContain(
++        'translateX(1px)',
++      );
++    }
++  });
++});
++
++describe('gesture variant propagation', () => {
++  beforeEach(() => {
++    globalThis.SystemInfo = { platform: 'web' } as typeof SystemInfo;
++    globalThis.Element = ElementCompt as unknown as typeof Element;
++    globalThis.HTMLElement = ElementCompt as unknown as typeof HTMLElement;
++    globalThis.EventTarget = ElementCompt as unknown as typeof EventTarget;
++  });
++
++  test('a whileTap label applies and unapplies children', async () => {
++    const { getByTestId } = render(
++      <motion.view data-testid='parent' whileTap='pressed'>
++        <motion.view
++          data-testid='child'
++          style={{ opacity: 0.5 }}
++          variants={{ pressed: { opacity: 1 } }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await wait(20);
++    expect(opacityOf(getByTestId('child'))).toBe(0.5);
++    fireEvent.touchstart(getByTestId('parent'));
++    await wait(30);
++    expect(opacityOf(getByTestId('child'))).toBe(1);
++    fireEvent.touchend(getByTestId('parent'));
++    await wait(30);
++    expect(opacityOf(getByTestId('child'))).toBe(0.5);
++  });
++});
+diff --git a/packages/motion/src/animation/index.ts b/packages/motion/src/animation/index.ts
+index a338c8122..4a4ca07ae 100644
+--- a/packages/motion/src/animation/index.ts
++++ b/packages/motion/src/animation/index.ts
+@@ -155,7 +155,7 @@ function animate<O extends {}>(
+   );
+ }
+ 
+-function stagger(
++function staggerMainThread(
+   ...args: Parameters<typeof stagger_>
+ ): ReturnType<typeof stagger_> {
+   'main thread';
+@@ -164,6 +164,19 @@ function stagger(
+   );
+ }
+ 
++/**
++ * `stagger()` is called from Main Thread Functions for `animate()`, and from
++ * render code for declarative `transition.delayChildren`. In the background
++ * runtime it computes directly, and serializes as the Main Thread Function
++ * when a worklet captures it.
++ */
++const stagger: typeof stagger_ = __MAIN_THREAD__
++  ? staggerMainThread
++  : Object.assign(
++    (...args: Parameters<typeof stagger_>) => stagger_(...args),
++    { toJSON: () => staggerMainThread },
++  );
++
+ function motionValue<V>(
+   init: V,
+   options?: MotionValueOptions,
+diff --git a/packages/motion/src/declarative/animationControls.ts b/packages/motion/src/declarative/animationControls.ts
+new file mode 100644
+index 000000000..9db56426a
+--- /dev/null
++++ b/packages/motion/src/declarative/animationControls.ts
+@@ -0,0 +1,105 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import { useEffect, useMemo } from '@lynx-js/react';
++
++import type { MotionDefinition, MotionTransition } from './types.js';
++
++/** A Motion component bound to controls through `animate={controls}`. */
++export interface AnimationControlsSubscriber {
++  start(
++    definition: MotionDefinition,
++    transitionOverride?: MotionTransition,
++  ): Promise<void>;
++  set(definition: MotionDefinition): void;
++  stop(): void;
++}
++
++/**
++ * Imperatively start animations on every Motion component that receives
++ * these controls as its `animate` prop. Variant labels propagate to their
++ * variant children like a declarative `animate` label.
++ *
++ * @public
++ */
++export interface MotionAnimationControls {
++  /**
++   * Animate every bound component to `definition`. Resolves once the bound
++   * components and their variant children have finished.
++   */
++  start(
++    definition: MotionDefinition,
++    transitionOverride?: MotionTransition,
++  ): Promise<void>;
++  /** Jump every bound component to `definition` without animating. */
++  set(definition: MotionDefinition): void;
++  /** Stop the animations started by these controls. */
++  stop(): void;
++}
++
++class AnimationControls implements MotionAnimationControls {
++  private readonly subscribers = new Set<AnimationControlsSubscriber>();
++
++  subscribe(subscriber: AnimationControlsSubscriber): () => void {
++    this.subscribers.add(subscriber);
++    return () => this.subscribers.delete(subscriber);
++  }
++
++  start(
++    definition: MotionDefinition,
++    transitionOverride?: MotionTransition,
++  ): Promise<void> {
++    return Promise.all(
++      [...this.subscribers].map(subscriber =>
++        subscriber.start(definition, transitionOverride)
++      ),
++    ).then(() => undefined);
++  }
++
++  set(definition: MotionDefinition): void {
++    for (const subscriber of this.subscribers) {
++      subscriber.set(definition);
++    }
++  }
++
++  stop(): void {
++    for (const subscriber of this.subscribers) {
++      subscriber.stop();
++    }
++  }
++}
++
++/** @internal */
++export function isAnimationControls(
++  value: unknown,
++): value is AnimationControls {
++  return value instanceof AnimationControls;
++}
++
++/**
++ * Create animation controls outside React.
++ *
++ * @public
++ */
++export function animationControls(): MotionAnimationControls {
++  return new AnimationControls();
++}
++
++/**
++ * Create animation controls for `animate={controls}`.
++ *
++ * @public
++ */
++export function useAnimationControls(): MotionAnimationControls {
++  const controls = useMemo(() => new AnimationControls(), []);
++  useEffect(() => () => controls.stop(), [controls]);
++  return controls;
++}
++
++/**
++ * Alias of {@link useAnimationControls}.
++ *
++ * @public
++ */
++export const useAnimation: () => MotionAnimationControls = useAnimationControls;
+diff --git a/packages/motion/src/declarative/motion.tsx b/packages/motion/src/declarative/motion.tsx
+index d3663f268..ab7e2f394 100644
+--- a/packages/motion/src/declarative/motion.tsx
++++ b/packages/motion/src/declarative/motion.tsx
+@@ -38,9 +38,11 @@ import {
+   useMainThreadRef,
+   useMemo,
+   useRef,
++  useState,
+ } from '@lynx-js/react';
+-import type { IntrinsicElements, MainThread } from '@lynx-js/types';
++import type { MainThread } from '@lynx-js/types';
+ 
++import { isAnimationControls } from './animationControls.js';
+ import { usePresenceMember } from './presence.js';
+ import {
+   collectMotionValues,
+@@ -67,6 +69,8 @@ import type {
+   MotionTransition,
+   MotionViewProps,
+ } from './types.js';
++import { VariantNode } from './variantTree.js';
++import type { AnimationSession } from './variantTree.js';
+ import {
+   fromWorkletTransition,
+   toWorkletTransition,
+@@ -75,14 +79,21 @@ import {
+ interface MotionVariantContextValue {
+   initial?: MotionDefinition | false;
+   animate?: MotionDefinition;
+-  delay?: number;
++  whileTap?: MotionDefinition;
++  whileHover?: MotionDefinition;
++  /** Closest variant node, which variant children register with. */
++  node?: VariantNode | undefined;
++  /** Delay for a variant child, including its stagger offset. */
++  childDelay?: ((child: VariantNode) => number) | undefined;
++  /** Resolves when the parent's own values finish (`beforeChildren`). */
++  parentComplete?: (() => Promise<void> | undefined) | undefined;
+ }
+ 
+ const emptyMotionVariantContext: MotionVariantContextValue = {};
+ const MotionVariantContext = createContext<MotionVariantContextValue>({});
+ 
+ function isVariantLabel(
+-  definition: MotionDefinition | false | undefined,
++  definition: unknown,
+ ): definition is string | string[] {
+   return typeof definition === 'string' || Array.isArray(definition);
+ }
+@@ -127,10 +138,41 @@ function getExplicitTargetDuration(
+   return targetCount > 0 ? longestDuration : 0;
+ }
+ 
++/** How a component's animation is timed relative to its variant tree. */
++interface MotionOrchestration {
++  /** Delay inherited from the parent, without this component's stagger. */
++  baseDelay: number;
++  /** Full inherited delay, evaluated once every sibling has registered. */
++  delay: () => number;
++  /** Resolves when this component may start animating. */
++  gate: () => Promise<unknown> | undefined;
++  session: AnimationSession;
++  /** Transition that replaces the resolved one (`controls.start/set`). */
++  transitionOverride: MotionTransition | undefined;
++  /** Changes whenever controls restart the same definition. */
++  nonce: number;
++  /** Serialized resolved animate definition. */
++  animateKey: string;
++  node: VariantNode;
++  /** Gesture labels inherited from the parent variant node. */
++  inheritedGestures: boolean;
++  inheritedTap: boolean;
++  inheritedHover: boolean;
++}
++
++interface ControlledAnimation {
++  definition: MotionDefinition;
++  transition?: MotionTransition | undefined;
++  instant?: boolean;
++  nonce: number;
++  resolve?: (() => void) | undefined;
++}
++
+ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+   context: MotionVariantContextValue;
+-  delay: number;
+   inheritsAnimate: boolean;
++  parentNode: VariantNode | undefined;
++  orchestration: MotionOrchestration;
+   props: Props;
+   resolvedAnimateDefinition: MotionTarget | false | undefined;
+ } {
+@@ -140,6 +182,35 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+     complete: completePresence,
+     initialSuppressed,
+   } = usePresenceMember();
++  const node = useMemo(() => new VariantNode(), []);
++
++  // `animate={controls}`: the definition comes from the latest start()/set().
++  const controls = isAnimationControls(props.animate)
++    ? props.animate
++    : undefined;
++  const [controlled, setControlled] = useState<ControlledAnimation>();
++  useEffect(() => {
++    if (!controls) {
++      return;
++    }
++    let nonce = 0;
++    return controls.subscribe({
++      start: (definition, transition) =>
++        new Promise<void>(resolve => {
++          setControlled({ definition, transition, nonce: ++nonce, resolve });
++        }),
++      set: definition => {
++        setControlled({ definition, instant: true, nonce: ++nonce });
++      },
++      stop: () => {
++        setControlled(undefined);
++      },
++    });
++  }, [controls]);
++  const ownAnimate = controls
++    ? controlled?.definition
++    : props.animate as MotionDefinition | undefined;
++
+   const isExiting = presence !== null && !presence.isPresent;
+   const exitDefinition = isExiting ? props.exit : undefined;
+   const inheritsParentAnimate = props.inherit !== false
+@@ -147,6 +218,35 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+     && isVariantLabel(parent.animate);
+   // An own `exit` starts a new orchestration root, like an explicit animate.
+   const inheritsAnimate = inheritsParentAnimate && exitDefinition === undefined;
++  const inheritsGestures = props.inherit !== false
++    && props.animate === undefined;
++  const whileTap = props.whileTap
++    ?? (inheritsGestures && isVariantLabel(parent.whileTap)
++      ? parent.whileTap
++      : undefined);
++  const whileHover = props.whileHover
++    ?? (inheritsGestures && isVariantLabel(parent.whileHover)
++      ? parent.whileHover
++      : undefined);
++  const inheritedGestures = whileTap !== props.whileTap
++    || whileHover !== props.whileHover;
++
++  // Only components with variants take part in stagger order; others are
++  // transparent and pass their parent's node through.
++  const isVariantChild = props.variants !== undefined
++    && (inheritsAnimate || inheritedGestures);
++  const parentNode = parent.node;
++  if (isVariantChild) {
++    parentNode?.addChild(node);
++  }
++  useEffect(() => {
++    if (isVariantChild && parentNode) {
++      parentNode.addChild(node);
++      return () => parentNode.removeChild(node);
++    }
++    return undefined;
++  }, [isVariantChild, parentNode]);
++
+   const initial = initialSuppressed
+     ? false
+     : (inheritsParentAnimate
+@@ -154,9 +254,7 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+         && (parent.initial === false || isVariantLabel(parent.initial))
+       ? parent.initial
+       : props.initial);
+-  const presentAnimate = inheritsParentAnimate
+-    ? parent.animate
+-    : props.animate;
++  const presentAnimate = inheritsParentAnimate ? parent.animate : ownAnimate;
+   const animate = exitDefinition ?? presentAnimate;
+   // Exit variants resolve with `AnimatePresence.custom` when it is provided.
+   const custom = isExiting && presence.custom !== undefined
+@@ -167,36 +265,120 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+     props.variants,
+     custom,
+   );
++  const transitionOverride = controlled?.instant
++    ? { type: false as const }
++    : controlled?.transition;
+   const resolvedAnimate = splitMotionTarget(
+     resolvedAnimateDefinition,
+-    props.transition,
++    transitionOverride ?? props.transition,
+   );
+-  const inheritedDelay = inheritsAnimate ? parent.delay ?? 0 : 0;
+-  const delayChildren = resolvedAnimate.transition?.delayChildren;
+-  const beforeChildrenDelay = resolvedAnimate.transition?.when
+-      === 'beforeChildren'
+-    ? getExplicitTargetDuration(
+-      resolvedAnimate.target,
+-      resolvedAnimate.transition,
+-    )
++  if (transitionOverride && resolvedAnimate.target) {
++    resolvedAnimate.transition = transitionOverride;
++  }
++  const transition = resolvedAnimate.transition;
++
++  // Only these transition fields affect children; functions such as
++  // stagger() are compared by identity.
++  const orchestrationKey = [
++    transition?.when,
++    typeof transition?.delayChildren === 'number'
++      ? transition.delayChildren
++      : undefined,
++    transition?.staggerChildren,
++    transition?.staggerDirection,
++  ].join();
++  const staggerFunction = typeof transition?.delayChildren === 'function'
++    ? transition.delayChildren
++    : undefined;
++  const parentChildDelay = parent.childDelay;
++  const baseDelay = inheritsAnimate
++    ? (parentChildDelay?.(node) ?? 0)
++    : 0;
++  const ownDelay = () => inheritsAnimate ? (parentChildDelay?.(node) ?? 0) : 0;
++  const hasTarget = Object.keys(resolvedAnimate.target ?? {}).length > 0;
++  const explicitBeforeChildren = transition?.when === 'beforeChildren'
++    ? getExplicitTargetDuration(resolvedAnimate.target, transition)
+     : 0;
+-  const childDelay = inheritedDelay
+-    + beforeChildrenDelay
+-    + (typeof delayChildren === 'number' ? delayChildren : 0);
++  // Automatic-duration beforeChildren waits for the parent's real completion.
++  const waitsForSelf = transition?.when === 'beforeChildren'
++    && explicitBeforeChildren === 0
++    && hasTarget;
++  const delayChildren = transition?.delayChildren;
++  const childDelay = (child: VariantNode) =>
++    ownDelay()
++    + explicitBeforeChildren
++    + (typeof delayChildren === 'number' ? delayChildren : 0)
++    + node.stagger(
++      child,
++      delayChildren,
++      transition?.staggerChildren,
++      transition?.staggerDirection,
++    );
++
++  // Serialized once per render and shared with the host effect key.
++  const animateKey = motionDefinitionKey(resolvedAnimate);
++  const session = node.beginSession(`${animateKey}:${controlled?.nonce ?? 0}`);
++  if (controlled?.resolve) {
++    const resolve = controlled.resolve;
++    controlled.resolve = undefined;
++    void session.complete().then(resolve);
++  }
++  const parentComplete = inheritsAnimate ? parent.parentComplete : undefined;
++  const gate = () =>
++    transition?.when === 'afterChildren'
++      ? Promise.all(node.children.map(child => child.completeCurrent()))
++      : parentComplete?.();
++
+   // Children follow an exit label; an object exit keeps their current label
+   // so they do not fall back to their static styles mid-exit.
+   const contextAnimate = exitDefinition !== undefined
+       && !isVariantLabel(exitDefinition)
+     ? presentAnimate
+     : animate;
+-  const context = useMemo<MotionVariantContextValue>(() => ({
+-    ...(initial === false || isVariantLabel(initial) ? { initial } : {}),
+-    ...(isVariantLabel(contextAnimate) ? { animate: contextAnimate } : {}),
+-    ...(childDelay ? { delay: childDelay } : {}),
+-  }), [contextAnimate, childDelay, initial]);
++  // As in Motion, a component is a variant node when it has variants or
++  // controls its own labels; other components are transparent.
++  const isVariantNode = props.variants !== undefined
++    || isVariantLabel(ownAnimate)
++    || isVariantLabel(props.initial)
++    || isVariantLabel(props.whileTap)
++    || isVariantLabel(props.whileHover)
++    || isVariantLabel(exitDefinition);
++  const context = useMemo<MotionVariantContextValue>(
++    () => ({
++      ...(initial === false || isVariantLabel(initial) ? { initial } : {}),
++      ...(isVariantLabel(contextAnimate) ? { animate: contextAnimate } : {}),
++      ...(isVariantLabel(whileTap) ? { whileTap } : {}),
++      ...(isVariantLabel(whileHover) ? { whileHover } : {}),
++      ...(isVariantNode
++        ? {
++          node,
++          childDelay,
++          parentComplete: waitsForSelf
++            ? () => node.session?.selfComplete
++            : undefined,
++        }
++        : {
++          node: parentNode,
++          childDelay: parentChildDelay,
++          parentComplete: parent.parentComplete,
++        }),
++    }),
++    // childDelay and parentComplete read the latest registration lazily.
++    [
++      contextAnimate,
++      initial,
++      whileTap,
++      whileHover,
++      isVariantNode,
++      parentNode,
++      parentChildDelay,
++      parent.parentComplete,
++      orchestrationKey,
++      staggerFunction,
++      waitsForSelf,
++    ],
++  );
+ 
+-  // Only an own exit, or an exit label inherited from the parent, animates;
+-  // any other component is released as soon as the exit renders.
+   const exitHasWork = isExiting
+     && (exitDefinition !== undefined || inheritsAnimate)
+     && Object.keys(resolvedAnimate.target ?? {}).length
+@@ -217,17 +399,34 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+   const changed = initial !== props.initial
+     || animate !== props.animate
+     || custom !== props.custom
++    || whileTap !== props.whileTap
++    || whileHover !== props.whileHover
+     || completeAnimation !== onAnimationComplete;
+   return {
+     context,
+-    delay: inheritedDelay,
+     inheritsAnimate,
++    parentNode,
++    orchestration: {
++      baseDelay,
++      delay: ownDelay,
++      gate,
++      session,
++      transitionOverride,
++      nonce: controlled?.nonce ?? 0,
++      animateKey,
++      node,
++      inheritedGestures,
++      inheritedTap: whileTap !== props.whileTap,
++      inheritedHover: whileHover !== props.whileHover,
++    },
+     props: changed
+       ? {
+         ...props,
+         initial,
+         animate,
+         custom,
++        whileTap,
++        whileHover,
+         onAnimationComplete: completeAnimation,
+       }
+       : props,
+@@ -241,11 +440,12 @@ function shouldProvideVariantContext(
+   children: unknown,
+ ): boolean {
+   return children !== undefined
+-    && props.whileTap === undefined
+-    && props.whileHover === undefined
+     && (props.inherit === false
+       || isVariantLabel(context.initial)
+-      || isVariantLabel(context.animate));
++      || isVariantLabel(context.animate)
++      || isVariantLabel(context.whileTap)
++      || isVariantLabel(context.whileHover)
++      || context.node !== undefined);
+ }
+ 
+ function variantContextValue(
+@@ -292,12 +492,23 @@ function tapInfo(event: unknown) {
+ 
+ function useMotionHostProps<Props extends MotionProps>(
+   props: Props,
+-  inheritedDelay = 0,
+-  inheritedResolvedAnimate?: MotionTarget | false,
+-  inheritsAnimate = false,
++  inherited: {
++    orchestration: MotionOrchestration;
++    resolvedAnimateDefinition: MotionTarget | false | undefined;
++    inheritsAnimate: boolean;
++  },
++  parentNode: VariantNode | undefined,
+ ): PreparedHostProps {
++  const { orchestration, inheritsAnimate } = inherited;
++  // useInheritedMotionProps has already replaced animation controls with the
++  // definition they started.
++  const animate = (props as MotionProps).animate as
++    | MotionDefinition
++    | undefined;
++  const inheritedDelay = orchestration.baseDelay;
++  const inheritedResolvedAnimate = inherited.resolvedAnimateDefinition;
+   const {
+-    animate,
++    animate: inheritedAnimate,
+     initial,
+     exit: _exit,
+     inherit: _inherit,
+@@ -382,8 +593,11 @@ function useMotionHostProps<Props extends MotionProps>(
+       : undefined);
+   const resolvedAnimate = splitMotionTarget(
+     resolvedAnimateDefinition,
+-    transition,
++    orchestration.transitionOverride ?? transition,
+   );
++  if (orchestration.transitionOverride && resolvedAnimate.target) {
++    resolvedAnimate.transition = orchestration.transitionOverride;
++  }
+   const resolvedTap = splitMotionTarget(resolvedTapDefinition, transition);
+   const resolvedHover = splitMotionTarget(
+     resolvedHoverDefinition,
+@@ -395,11 +609,9 @@ function useMotionHostProps<Props extends MotionProps>(
+       ...resolvedAnimate.transitionEnd,
+     }
+     : resolvedAnimate.target;
+-  const animationKey = motionDefinitionKey({
+-    animate: resolvedAnimate,
+-    whileTap: resolvedTap,
+-    whileHover: resolvedHover,
+-  });
++  const animationKey = `${orchestration.animateKey}|${
++    motionDefinitionKey(resolvedTap)
++  }|${motionDefinitionKey(resolvedHover)}`;
+   const styleKey = motionDefinitionKey(style);
+   const initialStyle = useMemo(
+     () =>
+@@ -476,6 +688,15 @@ function useMotionHostProps<Props extends MotionProps>(
+     [styleKey],
+   );
+ 
++  // A gesture variant label on this component propagates to its variant
++  // children; a label inherited from the parent is driven by the parent.
++  const { node, inheritedTap, inheritedHover } = orchestration;
++  const emitsTap = !inheritedTap && isVariantLabel(whileTap);
++  const emitsHover = !inheritedHover && isVariantLabel(whileHover);
++  // Press state is observed by the main-thread tap handlers, which report it
++  // to the variant tree for descendants that inherit the label.
++  const emitTapStart = () => node.emit('tapStart');
++  const emitTapEnd = () => node.emit('tapEnd');
+   const bindTouchStart = onTapStart || externalTouchStart
+     ? (event: unknown) => {
+       externalTouchStart?.(event);
+@@ -494,8 +715,8 @@ function useMotionHostProps<Props extends MotionProps>(
+       onTapCancel?.(event, tapInfo(event));
+     }
+     : undefined;
+-  const hasHoverInteraction = [
+-    resolvedHover.target,
++  const hasHoverInteraction = emitsHover || [
++    inheritedHover ? undefined : resolvedHover.target,
+     onHoverStart,
+     onHoverEnd,
+   ].some(Boolean);
+@@ -546,11 +767,17 @@ function useMotionHostProps<Props extends MotionProps>(
+         if (resolvedHover.target) {
+           void runOnMainThread(startHoverAnimation)();
+         }
++        if (emitsHover) {
++          node.emit('hoverStart');
++        }
+       } else {
+         onHoverEnd?.(event);
+         if (resolvedHover.target) {
+           void runOnMainThread(endHoverAnimation)();
+         }
++        if (emitsHover) {
++          node.emit('hoverEnd');
++        }
+       }
+     }
+     : undefined;
+@@ -568,8 +795,11 @@ function useMotionHostProps<Props extends MotionProps>(
+       && Object.keys(motionValues).length === 0
+       && !hadAnimateTarget
+     ) {
++      orchestration.session.settle();
+       return;
+     }
++    const { session } = orchestration;
++    const settleSession = () => session.settle();
+     // Worklet hydration replaces MainThreadObject handles in captured objects.
+     // Capture a fresh record so Lynx for Web doesn't mutate the memoized source
+     // that a later React render will reuse.
+@@ -610,7 +840,11 @@ function useMotionHostProps<Props extends MotionProps>(
+       styleCleanupRef.current?.();
+       styleCleanupRef.current = null;
+ 
++      // Bind while this worklet is still executing on MTS; completion is
++      // reported later from Motion's animation scheduler.
++      const reportSettled = runOnBackground(settleSession);
+       if (!elementRef.current) {
++        void reportSettled();
+         return;
+       }
+ 
+@@ -834,11 +1068,11 @@ function useMotionHostProps<Props extends MotionProps>(
+             return;
+           }
+           applyAnimateTransitionEnd();
++          void reportSettled();
+         });
+-      } else if (completionPromises.length > 0 && animate !== undefined) {
+-        // Bind while this worklet is still executing on MTS; the promise
+-        // settles later from Motion's animation scheduler.
++      } else if (completionPromises.length > 0) {
+         const reportAnimationComplete = onAnimationComplete
++            && animate !== undefined
+           ? runOnBackground(onAnimationComplete)
+           : undefined;
+         void Promise.all(completionPromises).then(() => {
+@@ -847,24 +1081,49 @@ function useMotionHostProps<Props extends MotionProps>(
+           }
+           applyAnimateTransitionEnd();
+           if (reportAnimationComplete) {
+-            void reportAnimationComplete(animate);
++            void reportAnimationComplete(animate!);
+           }
++          void reportSettled();
+         });
++      } else {
++        void reportSettled();
+       }
+     }
+ 
+-    void runOnMainThread(updateMotionStyles)(
+-      resolvedAnimate.target,
+-      resolvedTap.target,
+-      resolvedHover.target,
+-      resolvedAnimate.transitionEnd,
+-      workletAnimateTransition,
+-      initialValues,
+-      removedAnimateFallbackValues,
+-      inheritsAnimate,
+-      shouldAnimateTarget,
+-      compiledTransformTemplate,
+-    );
++    // Stagger depends on every sibling having registered, so the full delay
++    // is read now rather than during render.
++    const delay = orchestration.delay();
++    const animateTransition = delay === inheritedDelay
++      ? workletAnimateTransition
++      : toWorkletTransition(
++        resolvedAnimate.transition?.delay === undefined
++          ? { ...resolvedAnimate.transition, delay }
++          : resolvedAnimate.transition,
++      );
++    const dispatch = () =>
++      void runOnMainThread(updateMotionStyles)(
++        resolvedAnimate.target,
++        resolvedTap.target,
++        resolvedHover.target,
++        resolvedAnimate.transitionEnd,
++        animateTransition,
++        initialValues,
++        removedAnimateFallbackValues,
++        inheritsAnimate,
++        shouldAnimateTarget,
++        compiledTransformTemplate,
++      );
++    let cancelled = false;
++    const gate = orchestration.gate();
++    if (gate) {
++      void gate.then(() => {
++        if (!cancelled) {
++          dispatch();
++        }
++      });
++    } else {
++      dispatch();
++    }
+ 
+     function stopMotionStyles() {
+       'main thread';
+@@ -887,14 +1146,18 @@ function useMotionHostProps<Props extends MotionProps>(
+     }
+ 
+     return () => {
++      cancelled = true;
+       void runOnMainThread(stopMotionStyles)();
+     };
+     // Serialized targets and value IDs avoid restarting unchanged inline
+     // definitions while keeping animate and style transforms in one renderer.
+-  }, [animationKey, styleKey, transformTemplateKey]);
++  }, [animationKey, styleKey, transformTemplateKey, orchestration.nonce]);
+ 
+   function startTapAnimation(event: MainThread.TouchEvent) {
+     'main thread';
++    if (emitsTap) {
++      void runOnBackground(emitTapStart)();
++    }
+     if (!resolvedTap.target) {
+       return;
+     }
+@@ -1064,6 +1327,9 @@ function useMotionHostProps<Props extends MotionProps>(
+ 
+   function endTapAnimation(event: MainThread.TouchEvent) {
+     'main thread';
++    if (emitsTap) {
++      void runOnBackground(emitTapEnd)();
++    }
+     if (!resolvedTap.target) {
+       return;
+     }
+@@ -1504,6 +1770,41 @@ function useMotionHostProps<Props extends MotionProps>(
+     }
+   }
+ 
++  // Inherited gesture labels follow the parent's gesture state, and forward
++  // it to this component's own variant children.
++  const gestureHandlersRef = useRef({
++    startTapAnimation,
++    endTapAnimation,
++    startHoverAnimation,
++    endHoverAnimation,
++  });
++  gestureHandlersRef.current = {
++    startTapAnimation,
++    endTapAnimation,
++    startHoverAnimation,
++    endHoverAnimation,
++  };
++  const followsParentGesture = inheritedTap || inheritedHover;
++  useEffect(() => {
++    if (!followsParentGesture || !parentNode) {
++      return undefined;
++    }
++    return parentNode.listen(event => {
++      const handlers = gestureHandlersRef.current;
++      const syntheticEvent = {} as MainThread.TouchEvent;
++      if (inheritedTap && event === 'tapStart') {
++        void runOnMainThread(handlers.startTapAnimation)(syntheticEvent);
++      } else if (inheritedTap && event === 'tapEnd') {
++        void runOnMainThread(handlers.endTapAnimation)(syntheticEvent);
++      } else if (inheritedHover && event === 'hoverStart') {
++        void runOnMainThread(handlers.startHoverAnimation)();
++      } else if (inheritedHover && event === 'hoverEnd') {
++        void runOnMainThread(handlers.endHoverAnimation)();
++      }
++      node.emit(event);
++    });
++  }, [followsParentGesture, parentNode, inheritedTap, inheritedHover]);
++
+   return {
+     ...hostProps,
+     style: initialStyle,
+@@ -1515,7 +1816,7 @@ function useMotionHostProps<Props extends MotionProps>(
+     ...(bindGlobalMouseMove
+       ? { 'global-bindmousemove': bindGlobalMouseMove }
+       : {}),
+-    ...(resolvedTap.target
++    ...((resolvedTap.target || emitsTap) && !inheritedTap
+       ? {
+         'main-thread:bindtouchstart': startTapAnimation,
+         'main-thread:bindtouchend': endTapAnimation,
+@@ -1525,98 +1826,45 @@ function useMotionHostProps<Props extends MotionProps>(
+   };
+ }
+ 
+-const MotionView: FunctionComponent<MotionViewProps> = (props) => {
++function renderMotion<Props extends MotionProps>(
++  type: unknown,
++  props: Props,
++): ReturnType<typeof createElement> {
+   const inherited = useInheritedMotionProps(props);
+   const hostProps = useMotionHostProps(
+     inherited.props,
+-    inherited.delay,
+-    inherited.resolvedAnimateDefinition,
+-    inherited.inheritsAnimate,
++    inherited,
++    inherited.parentNode,
+   );
+   const { children, ...elementProps } = hostProps;
+   if (!shouldProvideVariantContext(props, inherited.context, children)) {
+-    return createElement('view', hostProps as IntrinsicElements['view']);
++    return createElement(type as 'view', hostProps as never);
+   }
+   return createElement(
+-    'view',
+-    elementProps as IntrinsicElements['view'],
++    type as 'view',
++    elementProps as never,
+     createElement(MotionVariantContext.Provider, {
+       value: variantContextValue(props, inherited.context),
+       children: children as ReactNode,
+     }),
+   );
+-};
++}
+ 
+-const MotionText: FunctionComponent<MotionTextProps> = (props) => {
+-  const inherited = useInheritedMotionProps(props);
+-  const hostProps = useMotionHostProps(
+-    inherited.props,
+-    inherited.delay,
+-    inherited.resolvedAnimateDefinition,
+-    inherited.inheritsAnimate,
+-  );
+-  const { children, ...elementProps } = hostProps;
+-  if (!shouldProvideVariantContext(props, inherited.context, children)) {
+-    return createElement('text', hostProps as IntrinsicElements['text']);
+-  }
+-  return createElement(
+-    'text',
+-    elementProps as IntrinsicElements['text'],
+-    createElement(MotionVariantContext.Provider, {
+-      value: variantContextValue(props, inherited.context),
+-      children: children as ReactNode,
+-    }),
+-  );
+-};
++const MotionView: FunctionComponent<MotionViewProps> = props =>
++  renderMotion('view', props);
+ 
+-const MotionImage: FunctionComponent<MotionImageProps> = (props) => {
+-  const inherited = useInheritedMotionProps(props);
+-  const hostProps = useMotionHostProps(
+-    inherited.props,
+-    inherited.delay,
+-    inherited.resolvedAnimateDefinition,
+-    inherited.inheritsAnimate,
+-  );
+-  const { children, ...elementProps } = hostProps;
+-  if (!shouldProvideVariantContext(props, inherited.context, children)) {
+-    return createElement('image', hostProps as IntrinsicElements['image']);
+-  }
+-  return createElement(
+-    'image',
+-    elementProps as IntrinsicElements['image'],
+-    createElement(MotionVariantContext.Provider, {
+-      value: variantContextValue(props, inherited.context),
+-      children: children as ReactNode,
+-    }),
+-  );
+-};
++const MotionText: FunctionComponent<MotionTextProps> = props =>
++  renderMotion('text', props);
++
++const MotionImage: FunctionComponent<MotionImageProps> = props =>
++  renderMotion('image', props);
+ 
+ function createMotionComponent<Props extends { style?: unknown }>(
+   Component: ComponentType<Props>,
+ ): FunctionComponent<MotionComponentProps<Props>> {
+   const MotionComponent: FunctionComponent<MotionComponentProps<Props>> = (
+     props,
+-  ) => {
+-    const inherited = useInheritedMotionProps(props);
+-    const hostProps = useMotionHostProps(
+-      inherited.props,
+-      inherited.delay,
+-      inherited.resolvedAnimateDefinition,
+-      inherited.inheritsAnimate,
+-    );
+-    const { children, ...componentProps } = hostProps;
+-    if (!shouldProvideVariantContext(props, inherited.context, children)) {
+-      return createElement(Component, hostProps as unknown as Props);
+-    }
+-    return createElement(
+-      Component,
+-      componentProps as unknown as Props,
+-      createElement(MotionVariantContext.Provider, {
+-        value: variantContextValue(props, inherited.context),
+-        children: children as ReactNode,
+-      }),
+-    );
+-  };
++  ) => renderMotion(Component, props);
+   return MotionComponent;
+ }
+ 
+diff --git a/packages/motion/src/declarative/types.ts b/packages/motion/src/declarative/types.ts
+index da8e44899..9c3852754 100644
+--- a/packages/motion/src/declarative/types.ts
++++ b/packages/motion/src/declarative/types.ts
+@@ -12,6 +12,8 @@ import type {
+ import type { ComponentType, FunctionComponent } from '@lynx-js/react';
+ import type { CSSProperties, IntrinsicElements } from '@lynx-js/types';
+ 
++import type { MotionAnimationControls } from './animationControls.js';
++
+ export type MotionStyleValue =
+   | string
+   | number
+@@ -78,8 +80,8 @@ export interface MotionTapInfo {
+ export interface MotionProps {
+   /** Values rendered before the first animation starts. */
+   initial?: MotionDefinition | false;
+-  /** Values animated whenever this target changes. */
+-  animate?: MotionDefinition;
++  /** Values animated whenever this target changes, or animation controls. */
++  animate?: MotionDefinition | MotionAnimationControls;
+   /** Values animated before `AnimatePresence` removes this component. */
+   exit?: MotionDefinition;
+   /** Whether parent variant labels propagate through this component. */
+diff --git a/packages/motion/src/declarative/variantTree.ts b/packages/motion/src/declarative/variantTree.ts
+new file mode 100644
+index 000000000..718e9bd0b
+--- /dev/null
++++ b/packages/motion/src/declarative/variantTree.ts
+@@ -0,0 +1,134 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++/**
++ * Background mirror of Motion's variant tree.
++ *
++ * On the Web, a parent VisualElement drives its variant children directly.
++ * In Lynx every component animates itself from the main thread, so this tree
++ * only carries what the children need from their parent: their position for
++ * stagger timing, the completion of the parent or of the subtree for `when`
++ * orchestration, and gesture state for gesture variant propagation.
++ */
++
++export type GestureEvent = 'tapStart' | 'tapEnd' | 'hoverStart' | 'hoverEnd';
++
++interface Deferred {
++  promise: Promise<void>;
++  resolve: () => void;
++}
++
++function createDeferred(): Deferred {
++  let resolve!: () => void;
++  const promise = new Promise<void>(done => {
++    resolve = done;
++  });
++  return { promise, resolve };
++}
++
++/** One animation of a node to one resolved definition. */
++export class AnimationSession {
++  private readonly self = createDeferred();
++  private settled = false;
++
++  constructor(
++    readonly key: string,
++    private readonly node: VariantNode,
++  ) {}
++
++  /** Mark this node's own values as finished. */
++  settle(): void {
++    if (!this.settled) {
++      this.settled = true;
++      this.self.resolve();
++    }
++  }
++
++  /** This node's own values have finished. */
++  get selfComplete(): Promise<void> {
++    return this.self.promise;
++  }
++
++  /** This node and every variant descendant have finished. */
++  complete(): Promise<void> {
++    const children = this.node.children;
++    return this.self.promise.then(() =>
++      Promise.all(children.map(child => child.completeCurrent())).then(
++        () => undefined,
++      )
++    );
++  }
++}
++
++export class VariantNode {
++  readonly children: VariantNode[] = [];
++  session: AnimationSession | undefined;
++  private readonly listeners = new Set<(event: GestureEvent) => void>();
++
++  /** Register a variant child. Children keep their mount order. */
++  addChild(child: VariantNode): void {
++    if (!this.children.includes(child)) {
++      this.children.push(child);
++    }
++  }
++
++  removeChild(child: VariantNode): void {
++    const index = this.children.indexOf(child);
++    if (index !== -1) {
++      this.children.splice(index, 1);
++    }
++  }
++
++  /** Start a session for `key` unless one is already running for it. */
++  beginSession(key: string): AnimationSession {
++    if (this.session?.key !== key) {
++      this.session = new AnimationSession(key, this);
++    }
++    return this.session;
++  }
++
++  completeCurrent(): Promise<void> {
++    return this.session ? this.session.complete() : Promise.resolve();
++  }
++
++  /**
++   * Stagger offset for a variant child, as motion-dom's `calcChildStagger`.
++   */
++  stagger(
++    child: VariantNode,
++    delayChildren: unknown,
++    staggerChildren = 0,
++    staggerDirection = 1,
++  ): number {
++    const index = this.children.indexOf(child);
++    if (index === -1) {
++      return 0;
++    }
++    const total = this.children.length;
++    if (typeof delayChildren === 'function') {
++      return (delayChildren as (index: number, total: number) => number)(
++        index,
++        total,
++      );
++    }
++    return staggerDirection === 1
++      ? index * staggerChildren
++      : (total - 1) * staggerChildren - index * staggerChildren;
++  }
++
++  listen(listener: (event: GestureEvent) => void): () => void {
++    this.listeners.add(listener);
++    return () => this.listeners.delete(listener);
++  }
++
++  get hasListeners(): boolean {
++    return this.listeners.size > 0;
++  }
++
++  emit(event: GestureEvent): void {
++    for (const listener of this.listeners) {
++      listener(event);
++    }
++  }
++}
+diff --git a/packages/motion/src/index.ts b/packages/motion/src/index.ts
+index d8a6205b8..56ab37374 100644
+--- a/packages/motion/src/index.ts
++++ b/packages/motion/src/index.ts
+@@ -20,6 +20,12 @@ export { useMotionValueRef } from './hooks/useMotionValueRef.js';
+ export { useMotionValue } from './hooks/useMotionValue.js';
+ export { motion } from './declarative/motion.js';
+ export { AnimatePresence } from './declarative/presence.js';
++export {
++  animationControls,
++  useAnimation,
++  useAnimationControls,
++} from './declarative/animationControls.js';
++export type { MotionAnimationControls } from './declarative/animationControls.js';
+ export type { AnimatePresenceProps } from './declarative/presence.js';
+ 
+ export type { MotionValue } from 'motion-dom';
+-- 
+2.43.0
+

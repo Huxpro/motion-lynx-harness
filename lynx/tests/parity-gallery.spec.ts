@@ -853,14 +853,69 @@ test("manifest case: each property selects its own transition timing", async ({
                 PROPERTY_SPECIFIC_TRANSITION_CASE.expected.startOpacity,
             x: PROPERTY_SPECIFIC_TRANSITION_CASE.expected.startX,
         })
-        await page.locator("#example-property-specific-transition").click()
-        await page.waitForTimeout(
-            PROPERTY_SPECIFIC_TRANSITION_CASE.expected.holdMs
+        // Sample from the click: opacity must settle while x is still held
+        // by its own delay, however long the renderer takes to start.
+        const timeline = target.evaluate(
+            (element, total) =>
+                new Promise<{ t: number; opacity: number; x: number }[]>(
+                    (resolve) => {
+                        const samples: {
+                            t: number
+                            opacity: number
+                            x: number
+                        }[] = []
+                        document.addEventListener(
+                            "click",
+                            () => {
+                                const startedAt = performance.now()
+                                const sample = () => {
+                                    const computed = getComputedStyle(element)
+                                    const t = performance.now() - startedAt
+                                    samples.push({
+                                        t,
+                                        opacity: Number(computed.opacity),
+                                        x: Math.round(
+                                            new DOMMatrixReadOnly(
+                                                computed.transform
+                                            ).m41
+                                        ),
+                                    })
+                                    t > total
+                                        ? resolve(samples)
+                                        : requestAnimationFrame(sample)
+                                }
+                                sample()
+                            },
+                            { capture: true, once: true }
+                        )
+                    }
+                ),
+            PROPERTY_SPECIFIC_TRANSITION_CASE.expected.holdMs * 6
         )
-        expect(await style(), `${renderer} per-property hold`).toEqual({
+        await page.locator("#example-property-specific-transition").click()
+        const samples = await timeline
+        const opacitySettled = samples.find(
+            ({ opacity }) =>
+                opacity === PROPERTY_SPECIFIC_TRANSITION_CASE.expected.endOpacity
+        )
+        const xMoved = samples.find(
+            ({ x }) => x !== PROPERTY_SPECIFIC_TRANSITION_CASE.expected.startX
+        )
+        expect(opacitySettled, `${renderer} opacity settles`).toBeDefined()
+        expect(xMoved, `${renderer} x animates`).toBeDefined()
+        expect(
+            { opacity: opacitySettled!.opacity, x: opacitySettled!.x },
+            `${renderer} per-property hold`
+        ).toEqual({
             opacity: PROPERTY_SPECIFIC_TRANSITION_CASE.expected.endOpacity,
             x: PROPERTY_SPECIFIC_TRANSITION_CASE.expected.startX,
         })
+        expect(
+            xMoved!.t - opacitySettled!.t,
+            `${renderer} x waits for its own delay`
+        ).toBeGreaterThanOrEqual(
+            PROPERTY_SPECIFIC_TRANSITION_CASE.expected.holdMs / 2
+        )
         await expect.poll(style).toEqual({
             opacity: PROPERTY_SPECIFIC_TRANSITION_CASE.expected.endOpacity,
             x: PROPERTY_SPECIFIC_TRANSITION_CASE.expected.endX,
@@ -1636,21 +1691,64 @@ test("manifest case: display stays block until the opacity exit completes", asyn
         const target = page.locator("#target-display-exit")
         await expect(target).toHaveCSS("display", "block")
         await expect(target).toHaveCSS("opacity", "1")
+        if (page === lynxPage) {
+            // Lynx for Web hydrates event bindings after first paint; a
+            // click before that is dropped and the exit never starts.
+            await expect(target).toHaveAttribute("has-react-ref", "true")
+            await target.evaluate(
+                () =>
+                    new Promise<void>((resolve) =>
+                        requestAnimationFrame(() =>
+                            requestAnimationFrame(() => resolve())
+                        )
+                    )
+            )
+        }
+        // Sample every frame from the click so the assertion does not depend
+        // on how long the renderer takes to start the exit.
+        const timeline = target.evaluate(
+            (element, total) =>
+                new Promise<{ display: string; opacity: number }[]>(
+                    (resolve) => {
+                        const samples: { display: string; opacity: number }[] =
+                            []
+                        document.addEventListener(
+                            "click",
+                            () => {
+                                const startedAt = performance.now()
+                                const sample = () => {
+                                    const style = getComputedStyle(element)
+                                    samples.push({
+                                        display: style.display,
+                                        opacity: Number(style.opacity),
+                                    })
+                                    performance.now() - startedAt > total
+                                        ? resolve(samples)
+                                        : requestAnimationFrame(sample)
+                                }
+                                sample()
+                            },
+                            { capture: true, once: true }
+                        )
+                    }
+                ),
+            DISPLAY_EXIT_CASE.expected.durationMs * 3
+        )
         await page.locator("#example-display-exit").click()
-        await page.waitForTimeout(DISPLAY_EXIT_CASE.expected.sampleMs)
-        const intermediate = await target.evaluate((element) => ({
-            display: getComputedStyle(element).display,
-            opacity: Number(getComputedStyle(element).opacity),
-        }))
-        expect(intermediate.display, `${renderer} display during exit`).toBe(
-            "block"
-        )
-        expect(intermediate.opacity, `${renderer} opacity during exit`).toBeGreaterThan(
-            0
-        )
-        expect(intermediate.opacity, `${renderer} opacity during exit`).toBeLessThan(
-            1
-        )
+        const samples = await timeline
+        expect(
+            samples.some(({ opacity }) => opacity > 0 && opacity < 1),
+            `${renderer} opacity during exit`
+        ).toBe(true)
+        // The Web baseline's final WAAPI frame can report a residual
+        // opacity (e.g. 0.00025) alongside display:none; only a visible
+        // opacity counts as the exit still running.
+        expect(
+            samples.filter(
+                ({ opacity, display }) => opacity > 0.01 && display !== "block"
+            ),
+            `${renderer} display during exit`
+        ).toEqual([])
         await expect(target).toHaveCSS("display", "none", {
             timeout: DISPLAY_EXIT_CASE.expected.durationMs + 600,
         })

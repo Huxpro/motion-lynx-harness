@@ -1,7 +1,7 @@
 From 62f8b5e498699292d2a157e32862d21f50ac7aa9 Mon Sep 17 00:00:00 2001
 From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
 Date: Tue, 29 Sep 2026 12:10:44 +0000
-Subject: [PATCH 4/4] feat(motion): add AnimatePresence and exit
+Subject: [PATCH 4/5] feat(motion): add AnimatePresence and exit
 
 AnimatePresence keeps removed keyed children rendered inside a presence
 context. Motion components register with their presence child, animate

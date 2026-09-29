@@ -148,6 +148,14 @@ contract.
 - `AnimatePresence` with `exit`: delayed removal, `onExitComplete`, re-entry,
   `mode="wait"`, `custom`, `initial={false}`, and exit labels propagated through
   variants
+- variant orchestration: `delayChildren: stagger()`, `staggerChildren` and
+  `staggerDirection` (components without variants are transparent to stagger
+  order), `when: "afterChildren"`, and `when: "beforeChildren"` for explicit
+  and automatic (spring) durations
+- `useAnimationControls` / `useAnimation` with `animate={controls}`:
+  `start()` propagates labels to variant children and resolves on completion;
+  `set()` jumps without animating
+- `whileTap` / `whileHover` variant labels propagate to variant children
 - `whileTap` plus tap callbacks
 - `whileHover` plus hover callbacks on mouse-capable clients
 - `onAnimationStart` / `onAnimationComplete` for base `animate`, inherited
@@ -163,8 +171,7 @@ compatibility.
 The source-backed roadmap and reproduced blockers live in
 [Huxpro/motion#3](https://github.com/Huxpro/motion/issues/3). They cover
 focus/in-view/drag, layout (including `popLayout` presence), consumer main-thread ref/handler
-composition, remaining gesture lifecycles, animation controls, gesture variant
-propagation, and dynamic/staggered child timing orchestration.
+composition, and remaining gesture lifecycles.
 
 The main long-term reuse boundary is:
 

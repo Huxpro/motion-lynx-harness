@@ -51,6 +51,7 @@ import {
     UPSTREAM_SOURCE_VERSION,
 } from "./conformance/cases.js"
 import { motion, useMotionValue } from "./motion/index.js"
+import { OrchestrationScene } from "./scenes/OrchestrationScene.js"
 import { PresenceScene } from "./scenes/PresenceScene.js"
 import "./App.css"
 
@@ -1262,6 +1263,9 @@ export function App() {
                     )}
 
                     {conformanceMode === "presence" && <PresenceScene />}
+                    {conformanceMode === "orchestration" && (
+                        <OrchestrationScene />
+                    )}
 
                     {easingFunctionArrayMode && (
                         <view
