@@ -3582,30 +3582,52 @@ test("manifest case: mirror repeat preserves easing direction", async ({
             )
         await expect.poll(x).toBe(REPEAT_MIRROR_CASE.expected.startX)
         await target.scrollIntoViewIfNeeded()
-        await page.locator("#example-repeat-mirror").click()
-        const timeline = await target.evaluate(
+        // Arm the sampler before clicking, then anchor the trajectory on the
+        // first frame that leaves the start value so renderer latency does
+        // not shift the quarter samples.
+        const recorded = target.evaluate(
             (element, duration) =>
                 new Promise<Array<{ time: number; value: number }>>(
                     (resolve) => {
-                        const started = performance.now()
                         const values: Array<{ time: number; value: number }> =
                             []
-                        const sample = () => {
-                            values.push({
-                                time: performance.now() - started,
-                                value: new DOMMatrixReadOnly(
-                                    getComputedStyle(element).transform
-                                ).m41,
-                            })
-                            performance.now() - started >= duration
-                                ? resolve(values)
-                                : requestAnimationFrame(sample)
-                        }
-                        sample()
+                        document.addEventListener(
+                            "click",
+                            () => {
+                                const started = performance.now()
+                                const sample = () => {
+                                    values.push({
+                                        time: performance.now() - started,
+                                        value: new DOMMatrixReadOnly(
+                                            getComputedStyle(element).transform
+                                        ).m41,
+                                    })
+                                    performance.now() - started >= duration
+                                        ? resolve(values)
+                                        : requestAnimationFrame(sample)
+                                }
+                                sample()
+                            },
+                            { capture: true, once: true }
+                        )
                     }
                 ),
-            REPEAT_MIRROR_CASE.expected.durationMs * 2 + 100
+            REPEAT_MIRROR_CASE.expected.durationMs * 2 + 800
         )
+        await page.locator("#example-repeat-mirror").click()
+        const recording = await recorded
+        const startIndex = recording.findIndex(
+            ({ value }) =>
+                Math.abs(value - REPEAT_MIRROR_CASE.expected.startX) >= 0.5
+        )
+        expect(startIndex, "mirror animation starts").toBeGreaterThan(0)
+        // The animation began between the last still frame and the first
+        // moving one; use the last still frame as time zero.
+        const origin = recording[startIndex - 1]!.time
+        const timeline = recording.map(({ time, value }) => ({
+            time: time - origin,
+            value,
+        }))
         const closest = (time: number) =>
             timeline.reduce((best, sample) =>
                 Math.abs(sample.time - time) < Math.abs(best.time - time)

@@ -182,6 +182,36 @@ test("manifest case: transformTemplate composes the generated transform", async 
 const opacity = (target: Locator) =>
     target.evaluate((element) => Number(getComputedStyle(element).opacity))
 
+/**
+ * Sample opacity on every frame from the click on `trigger` until `target`
+ * leaves the tree.
+ */
+async function opacityUntilRemoved(trigger: Locator, target: Locator) {
+    const samples = target.evaluate(
+        (element) =>
+            new Promise<number[]>((resolve) => {
+                const values: number[] = []
+                document.addEventListener(
+                    "click",
+                    () => {
+                        const sample = () => {
+                            if (!element.isConnected) {
+                                resolve(values)
+                                return
+                            }
+                            values.push(Number(getComputedStyle(element).opacity))
+                            requestAnimationFrame(sample)
+                        }
+                        sample()
+                    },
+                    { capture: true, once: true }
+                )
+            })
+    )
+    await trigger.click()
+    return samples
+}
+
 test.describe("AnimatePresence", () => {
     test("manifest case: a removed child exits before AnimatePresence releases it", async ({
         browser,
@@ -191,17 +221,21 @@ test.describe("AnimatePresence", () => {
         for (const [renderer, page] of scene.renderers) {
             const target = page.locator("#target-presence-exit")
             await expect(target).toHaveCount(1)
-            await page.locator("#example-presence-exit").click()
-            await page.waitForTimeout(expected.midExitMs)
-            await expect(target, `${renderer} still mounted mid-exit`).toHaveCount(1)
-            const mid = await opacity(target)
-            expect(mid, `${renderer} mid-exit opacity`).toBeGreaterThan(
+            const samples = await opacityUntilRemoved(
+                page.locator("#example-presence-exit"),
+                target
+            )
+            expect(
+                samples.some(
+                    (value) =>
+                        value > expected.minMidOpacity &&
+                        value < expected.maxMidOpacity
+                ),
+                `${renderer} still mounted mid-exit: ${samples.slice(0, 3)}…${samples.slice(-3)}`
+            ).toBe(true)
+            expect(samples.at(-1)!, `${renderer} released after the exit`).toBeLessThan(
                 expected.minMidOpacity
             )
-            expect(mid).toBeLessThan(expected.maxMidOpacity)
-            await expect(target, `${renderer} released`).toHaveCount(0, {
-                timeout: 3_000,
-            })
             await expect(page.locator("#presence-exit-status")).toHaveText(
                 "exit-complete:1"
             )
@@ -293,15 +327,32 @@ test.describe("AnimatePresence", () => {
     }) => {
         const scene = await openCase(browser, "presence")
         for (const [renderer, page] of scene.renderers) {
-            await expect(page.locator("#presence-no-exit-item-0")).toHaveCount(1)
-            const startedAt = Date.now()
+            const previous = page.locator("#presence-no-exit-item-0")
+            await expect(previous).toHaveCount(1)
+            // Time the removal in the page, from the click to disconnection.
+            const removedAfter = previous.evaluate(
+                (element) =>
+                    new Promise<number>((resolve) => {
+                        document.addEventListener(
+                            "click",
+                            () => {
+                                const startedAt = performance.now()
+                                const check = () =>
+                                    element.isConnected
+                                        ? requestAnimationFrame(check)
+                                        : resolve(performance.now() - startedAt)
+                                check()
+                            },
+                            { capture: true, once: true }
+                        )
+                    })
+            )
             await page.locator("#example-presence-no-exit").click()
-            await expect(page.locator("#presence-no-exit-item-1")).toHaveCount(1)
-            await expect(page.locator("#presence-no-exit-item-0")).toHaveCount(0)
             expect(
-                Date.now() - startedAt,
-                `${renderer} removal latency`
-            ).toBeLessThan(PRESENCE_CASES.noExit.expected.maxRemovalMs + 500)
+                await removedAfter,
+                `${renderer} removal does not wait for a transition`
+            ).toBeLessThan(PRESENCE_CASES.noExit.expected.maxRemovalMs)
+            await expect(page.locator("#presence-no-exit-item-1")).toHaveCount(1)
         }
         expect(scene.errors).toEqual([])
         await scene.close()
@@ -359,15 +410,14 @@ test.describe("AnimatePresence", () => {
         for (const [renderer, page] of scene.renderers) {
             const target = page.locator("#target-presence-propagation")
             await expect.poll(() => opacity(target)).toBe(1)
-            await page.locator("#example-presence-propagation").click()
-            await page.waitForTimeout(expected.midExitMs)
+            const samples = await opacityUntilRemoved(
+                page.locator("#example-presence-propagation"),
+                target
+            )
             expect(
-                await opacity(target),
-                `${renderer} grandchild follows the exit label`
-            ).toBeLessThan(expected.maxMidOpacity)
-            await expect(target, `${renderer} subtree released`).toHaveCount(0, {
-                timeout: 3_000,
-            })
+                samples.some((value) => value > 0 && value < expected.maxMidOpacity),
+                `${renderer} grandchild follows the exit label: ${samples.slice(-4)}`
+            ).toBe(true)
         }
         expect(scene.errors).toEqual([])
         await scene.close()
@@ -498,8 +548,15 @@ test.describe("variant orchestration", () => {
                     childMoving.every(({ values: [parent] }) => parent === from),
                     `${renderer} ${ORCHESTRATION_CASES.afterChildren.upstream.testName}: parent waits for ${to}`
                 ).toBe(true)
-                const last = samples.at(-1)!.values
-                expect(last, `${renderer} both settle at ${to}`).toEqual([to, to])
+                await expect
+                    .poll(
+                        () =>
+                            Promise.all(
+                                ids.map((id) => opacity(page.locator(`#${id}`)))
+                            ),
+                        { message: `${renderer} both settle at ${to}`, timeout: 4_000 }
+                    )
+                    .toEqual([to, to])
             }
         }
         expect(scene.errors).toEqual([])

@@ -832,7 +832,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "Web and Lynx-for-Web settle at --motion-color: #000 and consume it as a black background",
             "Android native keeps both the plain ReactLynx control and Motion target transparent",
         ],
-        gap: "lynx-stack #3466 restores the motion-dom setProperty contract and types, but native ReactLynx drops static --* declarations and var() consumption before Motion runs; tracked in issue #57.",
+        gap: "Native Lynx resolves CSS variables in inline styles only with the enableCSSInlineVariables page config (default false on Android, iOS and Harmony), which is why the plain ReactLynx control and the Motion target both computed transparent. The harness now enables it and the native bundle encodes enableCSSInlineVariables: true; the case stays partial until the Android control and Motion target are re-run on a device (issue #57).",
         evidence: {
             gallery: true,
             packageTest: true,
@@ -2673,7 +2673,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         ),
         baseline: WEB_BASELINE,
         assertions: [
-            "the previous child is gone and the next child is rendered within one exit-free update",
+            "the previous child is disconnected within 450ms of the click, before its 500ms enter transition could complete, and the next child renders",
         ],
         evidence: {
             gallery: true,
@@ -2681,7 +2681,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             dualRenderer: true,
             native: false,
         },
-        expected: { maxRemovalMs: 250 },
+        expected: { maxRemovalMs: 450 },
     },
     {
         id: "presence/custom",
@@ -6184,7 +6184,20 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
             "gestures/hover-propagation",
         ],
         lossBefore: 2,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 0,
         note: "I5/F4 · lynx-stack patch db8b8ab mirrors Motion's variant tree in the background: variant children register with their closest variant node in mount order (variant-less components stay transparent) for stagger index/total, and each node opens a completion session per resolved definition, settled from the main thread, so afterChildren waits for its subtree and automatic-duration beforeChildren waits for the parent's real completion · useAnimationControls drives animate through component state and resolves start() on the session · whileTap/whileHover labels propagate through the same tree · stagger() is callable from render code and still serializes as its Main Thread Function · the bundled orchestration contract is split into nine source-linked upstream tests (tracked 82 → 90), all passing in Web and Lynx for Web; package 182/182 · timing-sensitive specs now sample from the click instead of fixed delays, which also removes a pre-existing display-exit race · the remaining partial case is native-only CSS custom properties.",
+    },
+    {
+        id: "harness-css-inline-variables",
+        date: "2026-09-29",
+        title: "Enable inline CSS variables for native Lynx",
+        kind: "evidence",
+        status: "pending",
+        motionPr: 108,
+        issue: 57,
+        caseIds: ["targets/css-custom-property"],
+        lossBefore: 0,
+        lossAfter: WEIGHTED_LOSS,
+        note: "Root cause of the native-only gap: Lynx gates inline CSS variables behind the enableCSSInlineVariables page config (@lynx-js/type-config: Android/iOS/Harmony, SDK 3.6+, default false), so native dropped the static --motion-color declaration and its var() consumer before Motion ran · lynx.config.ts now applies pluginLynxConfig({ enableCSSInlineVariables: true }) and main.lynx.bundle encodes it · Web and Lynx-for-Web are unchanged (dual-renderer case still passes) · no native device is available in this environment, so the case stays partial; rounded weighted loss is 0, and closing the residual partial needs one Android run.",
     },
 ]

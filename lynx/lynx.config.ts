@@ -1,5 +1,6 @@
 import { defineConfig } from '@lynx-js/rspeedy'
 
+import { pluginLynxConfig } from '@lynx-js/config-rsbuild-plugin'
 import { pluginQRCode } from '@lynx-js/qrcode-rsbuild-plugin'
 import { pluginReactLynx } from '@lynx-js/react-rsbuild-plugin'
 import { pluginTypeCheck } from '@rsbuild/plugin-type-check'
@@ -13,6 +14,10 @@ export default defineConfig({
       },
     }),
     pluginReactLynx(),
+    // Native Lynx only resolves CSS custom properties declared in inline
+    // styles (and var() references to them) with this page config; without
+    // it, `--*` style keys are dropped before Motion runs (issue #57).
+    pluginLynxConfig({ enableCSSInlineVariables: true }),
     pluginTypeCheck(),
   ],
   environments: {
