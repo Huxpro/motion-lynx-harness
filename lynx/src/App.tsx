@@ -51,6 +51,7 @@ import {
     UPSTREAM_SOURCE_VERSION,
 } from "./conformance/cases.js"
 import { motion, useMotionValue } from "./motion/index.js"
+import { PresenceScene } from "./scenes/PresenceScene.js"
 import "./App.css"
 
 /**
@@ -1259,6 +1260,8 @@ export function App() {
                             </view>
                         </view>
                     )}
+
+                    {conformanceMode === "presence" && <PresenceScene />}
 
                     {easingFunctionArrayMode && (
                         <view

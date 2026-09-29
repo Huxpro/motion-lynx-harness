@@ -27,6 +27,7 @@ declare module '@lynx-js/types' {
       | "before-children"
       | "easing-function-array"
       | "transform-template"
+      | "presence"
       | "variant-inherit-opt-out"
       | "initial-false-propagation"
       | "inherited-variant-lifecycle"

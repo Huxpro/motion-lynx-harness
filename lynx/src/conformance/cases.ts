@@ -120,7 +120,7 @@ export const WEB_BASELINE = `framer-motion@${UPSTREAM_SOURCE_VERSION}`
  */
 export const LYNX_STACK_BUILD = {
     main: "4f63dfd",
-    motion: "08aea53",
+    motion: "62f8b5e",
 } as const
 export const LYNX_BUILD_LABEL = `lynx-stack main ${LYNX_STACK_BUILD.main} + motion ${LYNX_STACK_BUILD.motion}`
 
@@ -2369,27 +2369,176 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
     {
         id: "presence/exit",
         category: "Layout & presence",
-        title: "Exit + AnimatePresence",
+        title: "Exit before removal",
         summary:
-            "Exiting elements remain mounted until their exit animation completes.",
-        status: "blocked",
-        api: ["exit", "AnimatePresence"],
+            "A removed child keeps rendering while its exit animation runs, then AnimatePresence releases it.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Animates out a component when its removed"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "mid-exit the child is still mounted with an intermediate opacity",
+            "after the exit completes the child is removed",
+            "onExitComplete fires once after removal",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { exitMs: 600, customExitMs: 1000, midExitMs: 300, minMidOpacity: 0.15, maxMidOpacity: 0.85 },
+    },
+    {
+        id: "presence/initial-false",
+        category: "Layout & presence",
+        title: "Presence initial={false}",
+        summary:
+            "AnimatePresence initial={false} renders first children at their animate target without a mount animation.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
         upstream: source(
             "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
             "Suppresses initial animation if `initial={false}`"
         ),
         baseline: WEB_BASELINE,
         assertions: [
-            "exit target runs before removal",
-            "presence completion releases the child",
+            "the first frame is already at translateX(100px)",
+            "no intermediate x is observed after mount",
         ],
-        gap: "The React DOM presence tree has no Lynx host integration yet.",
         evidence: {
-            gallery: false,
-            packageTest: false,
-            dualRenderer: false,
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
             native: false,
         },
+        expected: { x: 100 },
+    },
+    {
+        id: "presence/reenter",
+        category: "Layout & presence",
+        title: "Re-enter before exit completes",
+        summary:
+            "A child re-added while exiting animates back in instead of being removed.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Animates a component back in if it's re-added before animating out"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the child is never removed",
+            "it settles back at opacity 1",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { reenterAfterMs: 150 },
+    },
+    {
+        id: "presence/wait",
+        category: "Layout & presence",
+        title: "mode=\"wait\"",
+        summary:
+            "mode=\"wait\" renders the next child only after the exiting child is removed.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Only renders one child at a time if mode === 'wait'"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "while the first child exits only one child is rendered",
+            "after rapid key changes the latest child is the only one rendered",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { latestIndex: 2 },
+    },
+    {
+        id: "presence/no-exit",
+        category: "Layout & presence",
+        title: "Remove without exit animation",
+        summary:
+            "A child without an exit definition is removed immediately.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Immediately remove child if no exit animations defined"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the previous child is gone and the next child is rendered within one exit-free update",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { maxRemovalMs: 250 },
+    },
+    {
+        id: "presence/custom",
+        category: "Layout & presence",
+        title: "AnimatePresence custom",
+        summary:
+            "Exit variants resolve with AnimatePresence.custom rather than the element's custom.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Exit variants are triggered with `AnimatePresence.custom`, not that of the element."
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "mid-exit x follows custom=2 (target 80) rather than the element's custom=1 (target 40)",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { sampleMs: 500, minX: 28, maxX: 56 },
+    },
+    {
+        id: "presence/exit-propagation",
+        category: "Layout & presence",
+        title: "Exit through variants",
+        summary:
+            "An exit label propagates to inherited variant descendants.",
+        status: "conformant",
+        api: ["AnimatePresence", "exit"],
+        upstream: source(
+            "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
+            "Exit propagates through variants"
+        ),
+        baseline: WEB_BASELINE,
+        assertions: [
+            "the grandchild animates its exit variant opacity",
+            "the subtree is removed after the exit completes",
+        ],
+        evidence: {
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: { midExitMs: 300, maxMidOpacity: 0.85 },
     },
 ]
 
@@ -2562,6 +2711,21 @@ export const INSTANT_TRANSITION_CASE = CONFORMANCE_CASES.find(
     (item) => item.id === "transitions/instant"
 ) as ConformanceCase & {
     expected: { startX: number; endX: number; sampleMs: number }
+}
+
+const presenceCase = (id: string) =>
+    CONFORMANCE_CASES.find((item) => item.id === id) as ConformanceCase & {
+        expected: Record<string, number>
+    }
+
+export const PRESENCE_CASES = {
+    exit: presenceCase("presence/exit"),
+    initialFalse: presenceCase("presence/initial-false"),
+    reenter: presenceCase("presence/reenter"),
+    wait: presenceCase("presence/wait"),
+    noExit: presenceCase("presence/no-exit"),
+    custom: presenceCase("presence/custom"),
+    exitPropagation: presenceCase("presence/exit-propagation"),
 }
 
 export const EASING_FUNCTION_ARRAY_CASE = CONFORMANCE_CASES.find(
@@ -3619,10 +3783,11 @@ export const ATOMIC_CAPABILITIES: readonly AtomicCapability[] = [
         id: "presence",
         group: "Layout & presence",
         api: "exit / AnimatePresence",
-        status: "blocked",
-        evidence: "planned",
+        status: "supported",
+        evidence: "dual-renderer",
         contract: "Keep exiting children alive until animation completion.",
-        boundary: "No Lynx presence tree integration exists.",
+        boundary:
+            "Supports sync and wait modes, custom, initial={false}, onExitComplete and exit label propagation; popLayout needs layout projection.",
     },
     {
         id: "consumer-composition",
@@ -4427,12 +4592,78 @@ export const CONFORMANCE_PRIORITIES: readonly GapPriority[] = [
     {
         caseId: "presence/exit",
         importance: 5,
-        platformFit: 2,
-        mts: 2,
-        reactLynx: 5,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 1,
         css: 0,
         rationale:
-            "High-value pattern needs projection and delayed-unmount ownership.",
+            "Delayed unmount is a background React concern; the exit animation reuses the declarative main-thread path.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/initial-false",
+        importance: 4,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Presence initial=false maps onto the existing initial=false first-frame contract.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/reenter",
+        importance: 4,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Re-entry flips presence state; generation guards on the main thread drop the stale exit completion.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/wait",
+        importance: 4,
+        platformFit: 4,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "mode=wait is a pure presence-tree scheduling rule.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/no-exit",
+        importance: 3,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Components with nothing to exit release synchronously in the background.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/custom",
+        importance: 3,
+        platformFit: 5,
+        mts: 0,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Exit variants resolve in the background with AnimatePresence.custom.",
+        issue: "https://github.com/Huxpro/motion/issues/5",
+    },
+    {
+        caseId: "presence/exit-propagation",
+        importance: 4,
+        platformFit: 4,
+        mts: 1,
+        reactLynx: 1,
+        css: 0,
+        rationale:
+            "Exit labels reuse the variant context propagation already used for animate labels.",
         issue: "https://github.com/Huxpro/motion/issues/5",
     },
 ]
@@ -5616,7 +5847,28 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         issue: 55,
         caseIds: ["targets/transform-template"],
         lossBefore: 5,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 4,
         note: "I4/F2 · lynx-stack patch 08aea53 installs the template on the main-thread element so every generated transform passes through it: Main Thread Functions run per frame with the latest unit-bearing values, plain string-composition closures compile into value slots checked against a real first-frame call, and the first frame calls the consumer template directly · package tests fail before and pass after, full package 168/168 · both renderers settle the upstream template at translateY(30px) translateX(30px) and a main-thread template computes x/2 = 15px; the same spec fails on the previous vendored build · blocked → conformant.",
+    },
+    {
+        id: "lynx-motion-animate-presence",
+        date: "2026-09-29",
+        title: "AnimatePresence and exit",
+        kind: "capability",
+        status: "verified",
+        motionPr: 108,
+        issue: 5,
+        caseIds: [
+            "presence/exit",
+            "presence/initial-false",
+            "presence/reenter",
+            "presence/wait",
+            "presence/no-exit",
+            "presence/custom",
+            "presence/exit-propagation",
+        ],
+        lossBefore: 4,
+        lossAfter: WEIGHTED_LOSS,
+        note: "I5/F4 · lynx-stack patch 62f8b5e adds AnimatePresence: removed keyed children stay rendered in a presence context, Motion components register with their presence child and animate their own exit or an inherited exit label, and the child is released when every member settles (immediately when nothing animates) · the single mislabelled presence contract is split into seven source-linked AnimatePresence tests (tracked 76 → 82) · package presence tests 7/7, full package 175/175; the testing bridge drops deferred runOnBackground calls, so release after an animated exit is proven by the dual-renderer suite, which passes all seven cases in Web and Lynx for Web · popLayout remains out of scope with layout projection.",
     },
 ]

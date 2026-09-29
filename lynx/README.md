@@ -145,6 +145,9 @@ contract.
   restores Motion's transform identity without needing to rerender; a child
   resolving from a real Suspense boundary also runs its inherited animation
   from the initial state instead of skipping directly to the animate value
+- `AnimatePresence` with `exit`: delayed removal, `onExitComplete`, re-entry,
+  `mode="wait"`, `custom`, `initial={false}`, and exit labels propagated through
+  variants
 - `whileTap` plus tap callbacks
 - `whileHover` plus hover callbacks on mouse-capable clients
 - `onAnimationStart` / `onAnimationComplete` for base `animate`, inherited
@@ -159,7 +162,7 @@ compatibility.
 
 The source-backed roadmap and reproduced blockers live in
 [Huxpro/motion#3](https://github.com/Huxpro/motion/issues/3). They cover
-focus/in-view/drag, layout and presence, consumer main-thread ref/handler
+focus/in-view/drag, layout (including `popLayout` presence), consumer main-thread ref/handler
 composition, remaining gesture lifecycles, animation controls, gesture variant
 propagation, and dynamic/staggered child timing orchestration.
 

@@ -49,6 +49,7 @@ import {
     UPSTREAM_SOURCE_VERSION,
     WEB_BASELINE,
 } from "../../src/conformance/cases"
+import { PresenceScene } from "./presence-scene"
 
 /**
  * DECLARATIVE API GALLERY — Framer Motion web reference.
@@ -1253,6 +1254,8 @@ export function App() {
                             </div>
                         </div>
                     )}
+
+                    {conformanceMode === "presence" && <PresenceScene />}
 
                     {easingFunctionArrayMode && (
                         <div

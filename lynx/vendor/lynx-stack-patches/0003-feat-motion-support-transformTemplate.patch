@@ -1,7 +1,7 @@
 From 08aea53e8e3d292e99383122fc46db2b3fd41c25 Mon Sep 17 00:00:00 2001
 From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
 Date: Tue, 29 Sep 2026 11:53:18 +0000
-Subject: [PATCH 3/3] feat(motion): support transformTemplate
+Subject: [PATCH 3/4] feat(motion): support transformTemplate
 
 transformTemplate runs on every rendered frame on the main thread, but
 consumer closures live in the background runtime. Main Thread Functions are

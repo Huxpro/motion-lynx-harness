@@ -1,0 +1,732 @@
+From 62f8b5e498699292d2a157e32862d21f50ac7aa9 Mon Sep 17 00:00:00 2001
+From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 12:10:44 +0000
+Subject: [PATCH 4/4] feat(motion): add AnimatePresence and exit
+
+AnimatePresence keeps removed keyed children rendered inside a presence
+context. Motion components register with their presence child, animate
+their own exit (or an inherited exit label) when it is no longer present,
+and report completion; the child is released once every member settles.
+Components with nothing to animate release immediately. Supports custom,
+initial={false}, onExitComplete, re-entry before exit completes, and
+mode='wait'.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .changeset/motion-animate-presence.md        |   5 +
+ packages/motion/__tests__/presence.test.tsx  | 261 ++++++++++++++++++
+ packages/motion/src/declarative/motion.tsx   |  80 +++++-
+ packages/motion/src/declarative/presence.tsx | 267 +++++++++++++++++++
+ packages/motion/src/declarative/types.ts     |   2 +
+ packages/motion/src/index.ts                 |   2 +
+ 6 files changed, 604 insertions(+), 13 deletions(-)
+ create mode 100644 .changeset/motion-animate-presence.md
+ create mode 100644 packages/motion/__tests__/presence.test.tsx
+ create mode 100644 packages/motion/src/declarative/presence.tsx
+
+diff --git a/.changeset/motion-animate-presence.md b/.changeset/motion-animate-presence.md
+new file mode 100644
+index 000000000..77e59e4c6
+--- /dev/null
++++ b/.changeset/motion-animate-presence.md
+@@ -0,0 +1,5 @@
++---
++"@lynx-js/motion": patch
++---
++
++Add `AnimatePresence` and the `exit` prop. Removed children stay mounted until their exit animations complete, exit labels propagate through variants, `custom` resolves exit variants, `initial={false}` skips the first mount animation, and `mode="wait"` renders an entering child after exiting children are removed.
+diff --git a/packages/motion/__tests__/presence.test.tsx b/packages/motion/__tests__/presence.test.tsx
+new file mode 100644
+index 000000000..9640da9c5
+--- /dev/null
++++ b/packages/motion/__tests__/presence.test.tsx
+@@ -0,0 +1,261 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++
++import { useState } from '@lynx-js/react';
++import { act, fireEvent, render } from '@lynx-js/react/testing-library';
++
++import { AnimatePresence, motion } from '../src/index.js';
++import type { MotionVariants } from '../src/declarative/types.js';
++import { ElementCompt } from '../src/polyfill/element.js';
++
++// The testing bridge does not deliver a `runOnBackground` call made after
++// the originating main-thread event returns, so release after an exit
++// animation completes is covered by the dual-renderer harness. These tests
++// cover presence state, exit targets, and synchronous release.
++const wait = (ms: number) =>
++  act(async () => {
++    await new Promise(resolve => setTimeout(resolve, ms));
++  });
++
++describe('AnimatePresence', () => {
++  beforeEach(() => {
++    globalThis.SystemInfo = { platform: 'web' } as typeof SystemInfo;
++    globalThis.NodeList ??= class NodeList {} as typeof NodeList;
++    globalThis.SVGElement ??= class SVGElement {} as typeof SVGElement;
++    globalThis.Element = ElementCompt as unknown as typeof Element;
++    globalThis.HTMLElement = ElementCompt as unknown as typeof HTMLElement;
++    globalThis.EventTarget = ElementCompt as unknown as typeof EventTarget;
++  });
++
++  test('suppresses the initial animation if initial is false', async () => {
++    const { getByTestId } = render(
++      <AnimatePresence initial={false}>
++        <motion.view
++          data-testid='box'
++          initial={{ x: 0 }}
++          animate={{ x: 100 }}
++          exit={{ opacity: 0 }}
++        />
++      </AnimatePresence>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(100px)',
++    );
++    await wait(50);
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(100px)',
++    );
++  });
++
++  test('animates a component out before removing it', async () => {
++    const onExitComplete = vi.fn();
++    function App() {
++      const [visible, setVisible] = useState(true);
++      return (
++        <view>
++          <AnimatePresence onExitComplete={onExitComplete}>
++            {visible && (
++              <motion.view
++                key='box'
++                data-testid='box'
++                style={{ opacity: 1 }}
++                exit={{ opacity: 0 }}
++                transition={{ duration: 0.2, ease: 'linear' }}
++              />
++            )}
++          </AnimatePresence>
++          <view data-testid='toggle' bindtap={() => setVisible(false)} />
++        </view>
++      );
++    }
++    const { getByTestId, queryByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('toggle'));
++    await wait(80);
++    const style = queryByTestId('box')?.getAttribute('style') ?? '';
++    const opacity = Number(/opacity: ([\d.]+)/.exec(style)?.[1]);
++    expect(opacity).toBeGreaterThan(0);
++    expect(opacity).toBeLessThan(1);
++    expect(onExitComplete).not.toHaveBeenCalled();
++  });
++
++  test('immediately removes a child without an exit animation', async () => {
++    function App() {
++      const [index, setIndex] = useState(0);
++      return (
++        <view>
++          <AnimatePresence mode='wait'>
++            <motion.view
++              key={index}
++              data-testid={`box-${index}`}
++              animate={{ opacity: 1 }}
++              transition={{ duration: 0.5 }}
++            />
++          </AnimatePresence>
++          <view data-testid='next' bindtap={() => setIndex(i => i + 1)} />
++        </view>
++      );
++    }
++    const { getByTestId, queryByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('next'));
++    await wait(30);
++    expect(queryByTestId('box-0')).toBeNull();
++    expect(queryByTestId('box-1')).not.toBeNull();
++  });
++
++  test('renders one child at a time in wait mode', async () => {
++    function App() {
++      const [index, setIndex] = useState(0);
++      return (
++        <view data-testid='root'>
++          <AnimatePresence mode='wait'>
++            <motion.view
++              key={index}
++              data-testid={`box-${index}`}
++              animate={{ opacity: 1 }}
++              exit={{ opacity: 0 }}
++              transition={{ duration: 0.1 }}
++            />
++          </AnimatePresence>
++          <view data-testid='next' bindtap={() => setIndex(i => i + 1)} />
++        </view>
++      );
++    }
++    const { getByTestId, queryByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(20);
++    fireEvent.tap(getByTestId('next'));
++    await wait(30);
++    expect(queryByTestId('box-0')).not.toBeNull();
++    expect(queryByTestId('box-1')).toBeNull();
++  });
++
++  test('animates a component back in if re-added before it exits', async () => {
++    function App() {
++      const [visible, setVisible] = useState(true);
++      return (
++        <view>
++          <AnimatePresence>
++            {visible && (
++              <motion.view
++                key='box'
++                data-testid='box'
++                animate={{ opacity: 1 }}
++                exit={{ opacity: 0 }}
++                transition={{ duration: 0.1 }}
++              />
++            )}
++          </AnimatePresence>
++          <view data-testid='toggle' bindtap={() => setVisible(v => !v)} />
++        </view>
++      );
++    }
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(20);
++    fireEvent.tap(getByTestId('toggle'));
++    await wait(40);
++    fireEvent.tap(getByTestId('toggle'));
++    await wait(200);
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('resolves exit variants with AnimatePresence custom', async () => {
++    const variants: MotionVariants = {
++      enter: { x: 0, transition: { type: false } },
++      exit: (i: unknown) => ({
++        x: Number(i) * 100,
++        transition: { duration: 0.3, ease: () => 1 },
++      }),
++    };
++    function App() {
++      const [visible, setVisible] = useState(true);
++      return (
++        <view>
++          <AnimatePresence custom={2}>
++            {visible && (
++              <motion.view
++                key='box'
++                data-testid='box'
++                custom={1}
++                variants={variants}
++                initial='exit'
++                animate='enter'
++                exit='exit'
++              />
++            )}
++          </AnimatePresence>
++          <view data-testid='toggle' bindtap={() => setVisible(false)} />
++        </view>
++      );
++    }
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(20);
++    fireEvent.tap(getByTestId('toggle'));
++    await wait(60);
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(200px)',
++    );
++  });
++
++  test('propagates exit through variants', async () => {
++    const variants: MotionVariants = {
++      enter: { opacity: 1, transition: { type: false } },
++      exit: { opacity: 0, transition: { duration: 0.3, ease: () => 1 } },
++    };
++    function App() {
++      const [visible, setVisible] = useState(true);
++      return (
++        <view>
++          <AnimatePresence>
++            {visible && (
++              <motion.view
++                key='parent'
++                initial='enter'
++                animate='enter'
++                exit='exit'
++                variants={variants}
++              >
++                <motion.view variants={variants}>
++                  <motion.view data-testid='leaf' variants={variants} />
++                </motion.view>
++              </motion.view>
++            )}
++          </AnimatePresence>
++          <view data-testid='toggle' bindtap={() => setVisible(false)} />
++        </view>
++      );
++    }
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await wait(20);
++    fireEvent.tap(getByTestId('toggle'));
++    await wait(60);
++    expect(getByTestId('leaf').getAttribute('style')).toContain('opacity: 0');
++  });
++});
+diff --git a/packages/motion/src/declarative/motion.tsx b/packages/motion/src/declarative/motion.tsx
+index 0795dbc78..d3663f268 100644
+--- a/packages/motion/src/declarative/motion.tsx
++++ b/packages/motion/src/declarative/motion.tsx
+@@ -41,6 +41,7 @@ import {
+ } from '@lynx-js/react';
+ import type { IntrinsicElements, MainThread } from '@lynx-js/types';
+ 
++import { usePresenceMember } from './presence.js';
+ import {
+   collectMotionValues,
+   motionDefinitionKey,
+@@ -134,21 +135,37 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+   resolvedAnimateDefinition: MotionTarget | false | undefined;
+ } {
+   const parent = useContext(MotionVariantContext);
+-  const inheritsAnimate = props.inherit !== false
++  const {
++    presence,
++    complete: completePresence,
++    initialSuppressed,
++  } = usePresenceMember();
++  const isExiting = presence !== null && !presence.isPresent;
++  const exitDefinition = isExiting ? props.exit : undefined;
++  const inheritsParentAnimate = props.inherit !== false
+     && props.animate === undefined
+     && isVariantLabel(parent.animate);
+-  const initial = inheritsAnimate
+-      && props.initial === undefined
+-      && (parent.initial === false || isVariantLabel(parent.initial))
+-    ? parent.initial
+-    : props.initial;
+-  const animate = inheritsAnimate
++  // An own `exit` starts a new orchestration root, like an explicit animate.
++  const inheritsAnimate = inheritsParentAnimate && exitDefinition === undefined;
++  const initial = initialSuppressed
++    ? false
++    : (inheritsParentAnimate
++        && props.initial === undefined
++        && (parent.initial === false || isVariantLabel(parent.initial))
++      ? parent.initial
++      : props.initial);
++  const presentAnimate = inheritsParentAnimate
+     ? parent.animate
+     : props.animate;
++  const animate = exitDefinition ?? presentAnimate;
++  // Exit variants resolve with `AnimatePresence.custom` when it is provided.
++  const custom = isExiting && presence.custom !== undefined
++    ? presence.custom
++    : props.custom;
+   const resolvedAnimateDefinition = resolveMotionDefinition(
+     animate,
+     props.variants,
+-    props.custom,
++    custom,
+   );
+   const resolvedAnimate = splitMotionTarget(
+     resolvedAnimateDefinition,
+@@ -166,18 +183,54 @@ function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
+   const childDelay = inheritedDelay
+     + beforeChildrenDelay
+     + (typeof delayChildren === 'number' ? delayChildren : 0);
++  // Children follow an exit label; an object exit keeps their current label
++  // so they do not fall back to their static styles mid-exit.
++  const contextAnimate = exitDefinition !== undefined
++      && !isVariantLabel(exitDefinition)
++    ? presentAnimate
++    : animate;
+   const context = useMemo<MotionVariantContextValue>(() => ({
+     ...(initial === false || isVariantLabel(initial) ? { initial } : {}),
+-    ...(isVariantLabel(animate) ? { animate } : {}),
++    ...(isVariantLabel(contextAnimate) ? { animate: contextAnimate } : {}),
+     ...(childDelay ? { delay: childDelay } : {}),
+-  }), [animate, childDelay, initial]);
++  }), [contextAnimate, childDelay, initial]);
++
++  // Only an own exit, or an exit label inherited from the parent, animates;
++  // any other component is released as soon as the exit renders.
++  const exitHasWork = isExiting
++    && (exitDefinition !== undefined || inheritsAnimate)
++    && Object.keys(resolvedAnimate.target ?? {}).length
++          + Object.keys(resolvedAnimate.transitionEnd ?? {}).length > 0;
++  useEffect(() => {
++    if (isExiting && !exitHasWork) {
++      completePresence();
++    }
++  }, [isExiting, exitHasWork]);
++  const { onAnimationComplete } = props;
++  const completeAnimation = exitHasWork
++    ? (definition: MotionDefinition) => {
++      onAnimationComplete?.(definition);
++      completePresence();
++    }
++    : onAnimationComplete;
++
++  const changed = initial !== props.initial
++    || animate !== props.animate
++    || custom !== props.custom
++    || completeAnimation !== onAnimationComplete;
+   return {
+     context,
+     delay: inheritedDelay,
+     inheritsAnimate,
+-    props: initial === props.initial && animate === props.animate
+-      ? props
+-      : { ...props, initial, animate },
++    props: changed
++      ? {
++        ...props,
++        initial,
++        animate,
++        custom,
++        onAnimationComplete: completeAnimation,
++      }
++      : props,
+     resolvedAnimateDefinition,
+   };
+ }
+@@ -246,6 +299,7 @@ function useMotionHostProps<Props extends MotionProps>(
+   const {
+     animate,
+     initial,
++    exit: _exit,
+     inherit: _inherit,
+     style,
+     transition,
+diff --git a/packages/motion/src/declarative/presence.tsx b/packages/motion/src/declarative/presence.tsx
+new file mode 100644
+index 000000000..73a1a5fae
+--- /dev/null
++++ b/packages/motion/src/declarative/presence.tsx
+@@ -0,0 +1,267 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import type { FunctionComponent, ReactNode } from '@lynx-js/react';
++import {
++  Children,
++  Fragment,
++  createContext,
++  createElement,
++  isValidElement,
++  useContext,
++  useEffect,
++  useMemo,
++  useRef,
++  useState,
++} from '@lynx-js/react';
++
++/**
++ * Tracks the Motion components rendered inside one presence child so the
++ * child is released only after every one of them has finished exiting.
++ */
++class PresenceRegistry {
++  private members = new Map<number, boolean>();
++  private exiting = false;
++
++  constructor(private readonly release: () => void) {}
++
++  register(id: number): () => void {
++    this.members.set(id, false);
++    return () => {
++      this.members.delete(id);
++      this.check();
++    };
++  }
++
++  complete(id: number): void {
++    if (this.exiting && this.members.has(id)) {
++      this.members.set(id, true);
++      this.check();
++    }
++  }
++
++  setPresent(isPresent: boolean): void {
++    if (isPresent === !this.exiting) {
++      return;
++    }
++    this.exiting = !isPresent;
++    for (const id of this.members.keys()) {
++      this.members.set(id, false);
++    }
++  }
++
++  check(): void {
++    if (!this.exiting) {
++      return;
++    }
++    for (const done of this.members.values()) {
++      if (!done) {
++        return;
++      }
++    }
++    this.exiting = false;
++    this.release();
++  }
++}
++
++/** @internal */
++export interface PresenceContextValue {
++  readonly isPresent: boolean;
++  /** `false` when the enclosing `AnimatePresence` suppresses first mount. */
++  readonly initial?: false | undefined;
++  /** `AnimatePresence.custom`, used to resolve exit variants. */
++  readonly custom?: unknown;
++  readonly registry: PresenceRegistry;
++}
++
++/** @internal */
++export const PresenceContext = createContext<PresenceContextValue | null>(
++  null,
++);
++
++let nextPresenceMemberId = 0;
++
++/**
++ * Register a Motion component with its presence child.
++ *
++ * @internal
++ */
++export function usePresenceMember(): {
++  presence: PresenceContextValue | null;
++  complete: () => void;
++  initialSuppressed: boolean;
++} {
++  const presence = useContext(PresenceContext);
++  const id = useMemo(() => ++nextPresenceMemberId, []);
++  // A presence child only suppresses the mount animation of the components
++  // it renders first, so capture the flag once.
++  const initialSuppressed = useRef(presence?.initial === false).current;
++  const registry = presence?.registry;
++  useEffect(() => registry?.register(id), [registry]);
++  return {
++    presence,
++    complete: () => registry?.complete(id),
++    initialSuppressed,
++  };
++}
++
++interface PresenceChildProps {
++  children: ReactNode;
++  isPresent: boolean;
++  initial: false | undefined;
++  custom: unknown;
++  onExitComplete: () => void;
++}
++
++const PresenceChild: FunctionComponent<PresenceChildProps> = ({
++  children,
++  isPresent,
++  initial,
++  custom,
++  onExitComplete,
++}) => {
++  const releaseRef = useRef(onExitComplete);
++  releaseRef.current = onExitComplete;
++  const registry = useMemo(
++    () => new PresenceRegistry(() => releaseRef.current()),
++    [],
++  );
++  registry.setPresent(isPresent);
++  const value = useMemo<PresenceContextValue>(
++    () => ({ isPresent, initial, custom, registry }),
++    [isPresent, initial, custom, registry],
++  );
++  // A child without Motion components, or whose components have nothing to
++  // animate, is released once the exit has been rendered.
++  useEffect(() => {
++    if (!isPresent) {
++      registry.check();
++    }
++  }, [isPresent, registry]);
++  return createElement(PresenceContext.Provider, { value, children });
++};
++
++type PresenceKey = string | number;
++
++interface PresenceItem {
++  key: PresenceKey;
++  element: ReactNode;
++}
++
++function presenceItems(children: ReactNode): PresenceItem[] {
++  const items: PresenceItem[] = [];
++  Children.toArray(children as never).forEach((child, index) => {
++    if (isValidElement(child)) {
++      const key = (child as { key?: PresenceKey | null }).key;
++      items.push({ key: key ?? `__presence_${index}`, element: child });
++    }
++  });
++  return items;
++}
++
++/** Props accepted by {@link AnimatePresence}. */
++export interface AnimatePresenceProps {
++  children?: ReactNode;
++  /** Set to `false` to skip the mount animation of the first children. */
++  initial?: boolean;
++  /** Value passed to exit variants instead of each component's `custom`. */
++  custom?: unknown;
++  /** Called once every exiting child has been removed. */
++  onExitComplete?: () => void;
++  /**
++   * `'sync'` renders entering and exiting children together; `'wait'`
++   * renders an entering child only after exiting children are removed.
++   */
++  mode?: 'sync' | 'wait';
++}
++
++/**
++ * Keep direct children mounted after React removes them until their `exit`
++ * animations complete. Children must have stable, unique `key`s.
++ *
++ * @public
++ */
++export const AnimatePresence: FunctionComponent<AnimatePresenceProps> = ({
++  children,
++  initial = true,
++  custom,
++  onExitComplete,
++  mode = 'sync',
++}) => {
++  const [, setGeneration] = useState(0);
++  const renderedRef = useRef<PresenceItem[]>([]);
++  const exitingRef = useRef(new Set<PresenceKey>());
++  const isInitialRenderRef = useRef(true);
++  useEffect(() => {
++    isInitialRenderRef.current = false;
++  }, []);
++  const onExitCompleteRef = useRef(onExitComplete);
++  onExitCompleteRef.current = onExitComplete;
++
++  const present = presenceItems(children);
++  const presentKeys = new Set(present.map(item => item.key));
++  const exiting = exitingRef.current;
++  const previous = renderedRef.current;
++  for (const item of previous) {
++    if (!presentKeys.has(item.key)) {
++      exiting.add(item.key);
++    }
++  }
++  for (const key of presentKeys) {
++    exiting.delete(key);
++  }
++
++  // Present children in their new order, with each exiting child kept after
++  // the sibling it previously followed.
++  const next: PresenceItem[] = [...present];
++  previous.forEach((item, index) => {
++    if (!exiting.has(item.key)) {
++      return;
++    }
++    let insertAt = 0;
++    for (let prior = index - 1; prior >= 0; prior--) {
++      const position = next.findIndex(entry =>
++        entry.key === previous[prior]!.key
++      );
++      if (position !== -1) {
++        insertAt = position + 1;
++        break;
++      }
++    }
++    next.splice(insertAt, 0, item);
++  });
++  const previouslyRendered = new Set(previous.map(item => item.key));
++  const rendered = mode === 'wait' && exiting.size > 0
++    ? next.filter(item =>
++      exiting.has(item.key) || previouslyRendered.has(item.key)
++    )
++    : next;
++  renderedRef.current = rendered;
++
++  const release = (key: PresenceKey) => {
++    if (!exitingRef.current.delete(key)) {
++      return;
++    }
++    renderedRef.current = renderedRef.current.filter(item => item.key !== key);
++    setGeneration(generation => generation + 1);
++    if (exitingRef.current.size === 0) {
++      onExitCompleteRef.current?.();
++    }
++  };
++
++  return createElement(
++    Fragment,
++    null,
++    ...rendered.map(item =>
++      createElement(PresenceChild, {
++        key: item.key,
++        isPresent: !exiting.has(item.key),
++        initial: !initial && isInitialRenderRef.current ? false : undefined,
++        custom,
++        onExitComplete: () => release(item.key),
++        children: item.element,
++      })
++    ),
++  );
++};
+diff --git a/packages/motion/src/declarative/types.ts b/packages/motion/src/declarative/types.ts
+index 3fc66ed5e..da8e44899 100644
+--- a/packages/motion/src/declarative/types.ts
++++ b/packages/motion/src/declarative/types.ts
+@@ -80,6 +80,8 @@ export interface MotionProps {
+   initial?: MotionDefinition | false;
+   /** Values animated whenever this target changes. */
+   animate?: MotionDefinition;
++  /** Values animated before `AnimatePresence` removes this component. */
++  exit?: MotionDefinition;
+   /** Whether parent variant labels propagate through this component. */
+   inherit?: boolean;
+   /** Values animated while the element is being pressed. */
+diff --git a/packages/motion/src/index.ts b/packages/motion/src/index.ts
+index 688ad99b2..d8a6205b8 100644
+--- a/packages/motion/src/index.ts
++++ b/packages/motion/src/index.ts
+@@ -19,6 +19,8 @@ export {
+ export { useMotionValueRef } from './hooks/useMotionValueRef.js';
+ export { useMotionValue } from './hooks/useMotionValue.js';
+ export { motion } from './declarative/motion.js';
++export { AnimatePresence } from './declarative/presence.js';
++export type { AnimatePresenceProps } from './declarative/presence.js';
+ 
+ export type { MotionValue } from 'motion-dom';
+ export type {
+-- 
+2.43.0
+

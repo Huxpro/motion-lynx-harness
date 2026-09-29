@@ -2,6 +2,7 @@ import { expect, test, type Browser, type Locator, type Page } from "@playwright
 
 import {
     EASING_FUNCTION_ARRAY_CASE,
+    PRESENCE_CASES,
     TRANSFORM_TEMPLATE_CASE,
 } from "../src/conformance/cases.js"
 
@@ -156,4 +157,175 @@ test("manifest case: transformTemplate composes the generated transform", async 
 
     expect(scene.errors).toEqual([])
     await scene.close()
+})
+
+const opacity = (target: Locator) =>
+    target.evaluate((element) => Number(getComputedStyle(element).opacity))
+
+test.describe("AnimatePresence", () => {
+    test("manifest case: a removed child exits before AnimatePresence releases it", async ({
+        browser,
+    }) => {
+        const expected = PRESENCE_CASES.exit.expected
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const target = page.locator("#target-presence-exit")
+            await expect(target).toHaveCount(1)
+            await page.locator("#example-presence-exit").click()
+            await page.waitForTimeout(expected.midExitMs)
+            await expect(target, `${renderer} still mounted mid-exit`).toHaveCount(1)
+            const mid = await opacity(target)
+            expect(mid, `${renderer} mid-exit opacity`).toBeGreaterThan(
+                expected.minMidOpacity
+            )
+            expect(mid).toBeLessThan(expected.maxMidOpacity)
+            await expect(target, `${renderer} released`).toHaveCount(0, {
+                timeout: 3_000,
+            })
+            await expect(page.locator("#presence-exit-status")).toHaveText(
+                "exit-complete:1"
+            )
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: presence initial false skips the mount animation", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const target = page.locator("#target-presence-initial-false")
+            await expect(target).toHaveCount(1)
+            // Sample every frame for a while: x must never be below target.
+            const samples = await target.evaluate(
+                (element) =>
+                    new Promise<number[]>((resolve) => {
+                        const values: number[] = []
+                        const startedAt = performance.now()
+                        const sample = () => {
+                            values.push(
+                                new DOMMatrixReadOnly(
+                                    getComputedStyle(element).transform
+                                ).m41
+                            )
+                            performance.now() - startedAt > 400
+                                ? resolve(values)
+                                : requestAnimationFrame(sample)
+                        }
+                        sample()
+                    })
+            )
+            expect(
+                samples.every(
+                    (x) => x === PRESENCE_CASES.initialFalse.expected.x
+                ),
+                `${renderer} ${PRESENCE_CASES.initialFalse.upstream.testName}: ${samples.slice(0, 4)}`
+            ).toBe(true)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: a child re-added while exiting animates back in", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const target = page.locator("#target-presence-reenter")
+            await expect.poll(() => opacity(target)).toBe(1)
+            await page.locator("#example-presence-reenter").click()
+            await page.waitForTimeout(
+                PRESENCE_CASES.reenter.expected.reenterAfterMs + 700
+            )
+            await expect(target, `${renderer} never removed`).toHaveCount(1)
+            await expect.poll(() => opacity(target)).toBe(1)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: mode wait renders one child at a time", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const items = page.locator('[id^="presence-wait-item-"]')
+            await expect(items).toHaveCount(1)
+            await page.locator("#example-presence-wait").click()
+            await page.waitForTimeout(200)
+            await expect(items, `${renderer} one child while exiting`).toHaveCount(1)
+            await expect(page.locator("#presence-wait-item-0")).toHaveCount(1)
+            await expect(
+                page.locator(
+                    `#presence-wait-item-${PRESENCE_CASES.wait.expected.latestIndex}`
+                ),
+                `${renderer} latest child after exit`
+            ).toHaveCount(1, { timeout: 3_000 })
+            await expect(items).toHaveCount(1)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: a child without exit is removed immediately", async ({
+        browser,
+    }) => {
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            await expect(page.locator("#presence-no-exit-item-0")).toHaveCount(1)
+            const startedAt = Date.now()
+            await page.locator("#example-presence-no-exit").click()
+            await expect(page.locator("#presence-no-exit-item-1")).toHaveCount(1)
+            await expect(page.locator("#presence-no-exit-item-0")).toHaveCount(0)
+            expect(
+                Date.now() - startedAt,
+                `${renderer} removal latency`
+            ).toBeLessThan(PRESENCE_CASES.noExit.expected.maxRemovalMs + 500)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: exit variants use AnimatePresence custom", async ({
+        browser,
+    }) => {
+        const expected = PRESENCE_CASES.custom.expected
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const target = page.locator("#target-presence-custom")
+            await expect.poll(async () => (await translate(target)).x).toBe(0)
+            await page.locator("#example-presence-custom").click()
+            await page.waitForTimeout(expected.sampleMs)
+            const { x } = await translate(target)
+            expect(x, `${renderer} custom=2 exit progress`).toBeGreaterThanOrEqual(
+                expected.minX
+            )
+            expect(x).toBeLessThanOrEqual(expected.maxX)
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
+
+    test("manifest case: exit propagates through variants", async ({
+        browser,
+    }) => {
+        const expected = PRESENCE_CASES.exitPropagation.expected
+        const scene = await openCase(browser, "presence")
+        for (const [renderer, page] of scene.renderers) {
+            const target = page.locator("#target-presence-propagation")
+            await expect.poll(() => opacity(target)).toBe(1)
+            await page.locator("#example-presence-propagation").click()
+            await page.waitForTimeout(expected.midExitMs)
+            expect(
+                await opacity(target),
+                `${renderer} grandchild follows the exit label`
+            ).toBeLessThan(expected.maxMidOpacity)
+            await expect(target, `${renderer} subtree released`).toHaveCount(0, {
+                timeout: 3_000,
+            })
+        }
+        expect(scene.errors).toEqual([])
+        await scene.close()
+    })
 })
