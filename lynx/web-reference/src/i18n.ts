@@ -102,8 +102,8 @@ const STRINGS = {
 
     "validation.title": { en: "Current validation gates", zh: "当前验证关卡" },
     "validation.desc": {
-        en: "Current evidence is measured on lynx-stack main 4f63dfd (MainThreadObject runtime) plus the declarative Motion port 162e563, packed into lynx/vendor. The canonical PR stack below still needs to be rebased onto main.",
-        zh: "当前证据基于 lynx-stack main 4f63dfd（MainThreadObject 运行时）加声明式 Motion 移植 162e563，打包于 lynx/vendor。下方标准 PR 栈仍需变基到 main。",
+        en: "Current evidence is measured on lynx-stack main 4f63dfd (MainThreadObject runtime) plus the declarative Motion patch series in lynx/vendor. The canonical PR stack below still needs to be rebased onto main.",
+        zh: "当前证据基于 lynx-stack main 4f63dfd（MainThreadObject 运行时）加 lynx/vendor 中的声明式 Motion 补丁序列。下方标准 PR 栈仍需变基到 main。",
     },
     "validation.date": { en: "29 Sep 2026", zh: "2026-09-29" },
     "validation.pass": { en: "Pass", zh: "通过" },

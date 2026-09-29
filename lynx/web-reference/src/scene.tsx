@@ -6,6 +6,8 @@ import {
     BEFORE_CHILDREN_CASE,
     DELAY_CASE,
     DELAY_CHILDREN_CASE,
+    EASING_FUNCTION_ARRAY_CASE,
+    TRANSFORM_TEMPLATE_CASE,
     DEEP_DELAY_CHILDREN_CASE,
     DEEP_INITIAL_FALSE_PROPAGATION_CASE,
     DEEP_VARIANT_PROPAGATION_CASE,
@@ -358,6 +360,17 @@ function SuspenseRemountResetChild() {
     )
 }
 
+// Upstream `keyframes - accepts ease as an array` counts easing invocations.
+const easingCalls = { first: 0, second: 0 }
+const holdFirstSegment = (progress: number) => {
+    easingCalls.first += 1
+    return progress >= 1 ? 1 : 0
+}
+const easeInSecondSegment = (progress: number) => {
+    easingCalls.second += 1
+    return progress * progress
+}
+
 export function App() {
     const conformanceMode = new URLSearchParams(window.location.search).get(
         "case"
@@ -398,6 +411,9 @@ export function App() {
     const variantPropagationMode = conformanceMode === "variant-propagation"
     const delayChildrenMode = conformanceMode === "delay-children"
     const beforeChildrenMode = conformanceMode === "before-children"
+    const easingFunctionArrayMode =
+        conformanceMode === "easing-function-array"
+    const transformTemplateMode = conformanceMode === "transform-template"
     const variantInheritOptOutMode =
         conformanceMode === "variant-inherit-opt-out"
     const initialFalsePropagationMode =
@@ -468,6 +484,8 @@ export function App() {
         useState(false)
     const [delayChildrenActive, setDelayChildrenActive] = useState(false)
     const [beforeChildrenActive, setBeforeChildrenActive] = useState(false)
+    const [easingArrayActive, setEasingArrayActive] = useState(false)
+    const [easingArrayCalls, setEasingArrayCalls] = useState("idle")
     const [deepDelayChildrenActive, setDeepDelayChildrenActive] =
         useState(false)
     const [nestedControlledOpen, setNestedControlledOpen] = useState(false)
@@ -1232,6 +1250,118 @@ export function App() {
                                         />
                                     </motion.div>
                                 </motion.div>
+                            </div>
+                        </div>
+                    )}
+
+                    {easingFunctionArrayMode && (
+                        <div
+                            id="example-easing-function-array"
+                            style={conformanceCard}
+                            onClick={() => setEasingArrayActive(true)}
+                        >
+                            <div style={info}>
+                                <span style={cardTitle}>Easing array</span>
+                                <span
+                                    id="easing-function-array-calls"
+                                    style={code}
+                                >
+                                    {easingArrayCalls}
+                                </span>
+                            </div>
+                            <div style={demo}>
+                                <motion.div
+                                    id="target-easing-function-array"
+                                    style={{
+                                        ...small,
+                                        backgroundColor: "#9b72f2",
+                                    }}
+                                    animate={
+                                        easingArrayActive
+                                            ? {
+                                                  x: [
+                                                      EASING_FUNCTION_ARRAY_CASE
+                                                          .expected.startX,
+                                                      EASING_FUNCTION_ARRAY_CASE
+                                                          .expected.middleX,
+                                                      EASING_FUNCTION_ARRAY_CASE
+                                                          .expected.endX,
+                                                  ],
+                                              }
+                                            : {
+                                                  x: EASING_FUNCTION_ARRAY_CASE
+                                                      .expected.startX,
+                                              }
+                                    }
+                                    transition={{
+                                        duration:
+                                            EASING_FUNCTION_ARRAY_CASE.expected
+                                                .durationMs / 1000,
+                                        ease: [
+                                            holdFirstSegment,
+                                            easeInSecondSegment,
+                                        ],
+                                    }}
+                                    onAnimationComplete={() =>
+                                        easingArrayActive &&
+                                        setEasingArrayCalls(
+                                            `first:${easingCalls.first > 0} second:${easingCalls.second > 0}`
+                                        )
+                                    }
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {transformTemplateMode && (
+                        <div
+                            id="example-transform-template"
+                            style={conformanceCard}
+                        >
+                            <div style={info}>
+                                <span style={cardTitle}>
+                                    Transform template
+                                </span>
+                                <span style={code}>
+                                    translateY(x) + generated
+                                </span>
+                            </div>
+                            <div style={demo}>
+                                <motion.div
+                                    id="target-transform-template"
+                                    style={{ ...small, backgroundColor: "#8ca7ff" }}
+                                    initial={{
+                                        x: TRANSFORM_TEMPLATE_CASE.expected
+                                            .initialX,
+                                    }}
+                                    animate={{
+                                        x: TRANSFORM_TEMPLATE_CASE.expected
+                                            .targetX,
+                                    }}
+                                    transition={{ duration: 0.01 }}
+                                    transformTemplate={({ x }, generated) =>
+                                        `translateY(${x}) ${generated}`
+                                    }
+                                />
+                                <motion.div
+                                    id="target-transform-template-computed"
+                                    style={{ ...small, backgroundColor: "#9b72f2" }}
+                                    initial={{
+                                        x: TRANSFORM_TEMPLATE_CASE.expected
+                                            .initialX,
+                                    }}
+                                    animate={{
+                                        x: TRANSFORM_TEMPLATE_CASE.expected
+                                            .targetX,
+                                    }}
+                                    transition={{ duration: 0.01 }}
+                                    transformTemplate={({ x }) => {
+                                        "main thread"
+                                        return `translateX(${
+                                            Number.parseFloat(String(x ?? "0")) / 2
+                                        }px)`
+                                    }}
+                                />
                             </div>
                         </div>
                     )}

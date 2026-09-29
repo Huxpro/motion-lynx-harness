@@ -120,6 +120,10 @@ contract.
 - property-specific transition timing routes independently within one target
 - discrete `display:none` waits until an opacity exit completes
 - scalar targets, keyframes, repeat/reverse, colors, and transform aliases
+- easing callbacks and per-keyframe `ease` arrays (sampled into an equivalent
+  main-thread easing, as Motion does for WAAPI)
+- `transformTemplate`: string-composition closures as written for the Web, or
+  `'main thread'` templates that compute with the latest values each frame
 - live `MotionValue` styles
 - string/array/function variants, including left-to-right array merging with
   equivalent inline and hoisted definitions; `custom`, target-local transitions, and

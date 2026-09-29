@@ -120,7 +120,7 @@ export const WEB_BASELINE = `framer-motion@${UPSTREAM_SOURCE_VERSION}`
  */
 export const LYNX_STACK_BUILD = {
     main: "4f63dfd",
-    motion: "162e563",
+    motion: "08aea53",
 } as const
 export const LYNX_BUILD_LABEL = `lynx-stack main ${LYNX_STACK_BUILD.main} + motion ${LYNX_STACK_BUILD.motion}`
 
@@ -1114,7 +1114,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         title: "Easing function array",
         summary:
             "A distinct easing callback is invoked for each keyframe segment.",
-        status: "blocked",
+        status: "conformant",
         api: ["transition.ease", "EasingFunction[]"],
         upstream: source(
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
@@ -1124,14 +1124,25 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         assertions: [
             "the first segment invokes its easing callback",
             "the second segment invokes its easing callback",
+            "a hold-at-start first-segment callback keeps x at the first keyframe through the first half",
+            "an ease-in second-segment callback trails the linear midpoint of its segment",
             "both renderers settle at the final keyframe without runtime errors",
         ],
-        gap: "Web invokes both callbacks; Lynx invokes neither while silently settling. Arbitrary nested callables need generic MTS/ReactLynx hydration and lifecycle support; tracked in issue #37.",
         evidence: {
-            gallery: false,
+            gallery: true,
             packageTest: true,
-            dualRenderer: false,
+            dualRenderer: true,
             native: false,
+        },
+        expected: {
+            durationMs: 1600,
+            startX: 0,
+            middleX: 100,
+            endX: 200,
+            holdUntilMs: 700,
+            secondSegmentSampleMs: 1200,
+            secondSegmentMinX: 108,
+            secondSegmentMaxX: 142,
         },
     },
     {
@@ -1140,7 +1151,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         title: "Transform template",
         summary:
             "A consumer callback composes custom transform text around Motion's generated transform.",
-        status: "blocked",
+        status: "conformant",
         api: ["transformTemplate", "transform composition"],
         upstream: source(
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
@@ -1148,16 +1159,20 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
         ),
         baseline: WEB_BASELINE,
         assertions: [
-            "the callback receives the latest transform values",
-            "the callback receives Motion's generated transform string",
-            "Web, Lynx-for-Web, and native Lynx render translateY(30px) translateX(30px)",
+            "the template composes the latest x value with units around Motion's generated transform string",
+            "Web and Lynx-for-Web render translateY(30px) translateX(30px) after the animation settles",
+            "a main-thread template that computes with x receives the same latest values every frame",
         ],
-        gap: "Web composes x/y as 30/30; immutable Lynx-for-Web and Android native render only x/y 30/0. Consumer closures need generic lifecycle-managed main-thread callable handles; tracked in issue #55.",
         evidence: {
-            gallery: false,
-            packageTest: false,
-            dualRenderer: false,
-            native: true,
+            gallery: true,
+            packageTest: true,
+            dualRenderer: true,
+            native: false,
+        },
+        expected: {
+            initialX: 10,
+            targetX: 30,
+            computedX: 15,
         },
     },
     {
@@ -2549,6 +2564,14 @@ export const INSTANT_TRANSITION_CASE = CONFORMANCE_CASES.find(
     expected: { startX: number; endX: number; sampleMs: number }
 }
 
+export const EASING_FUNCTION_ARRAY_CASE = CONFORMANCE_CASES.find(
+    (item) => item.id === "transitions/easing-function-array"
+) as ConformanceCase & { expected: Record<string, number> }
+
+export const TRANSFORM_TEMPLATE_CASE = CONFORMANCE_CASES.find(
+    (item) => item.id === "targets/transform-template"
+) as ConformanceCase & { expected: Record<string, number> }
+
 export const NAMED_EASING_CASE = CONFORMANCE_CASES.find(
     (item) => item.id === "transitions/named-easing"
 ) as ConformanceCase & {
@@ -3245,12 +3268,23 @@ export const ATOMIC_CAPABILITIES: readonly AtomicCapability[] = [
         id: "transform-template",
         group: "Targets",
         api: "transformTemplate",
-        status: "blocked",
-        evidence: "planned",
+        status: "supported",
+        evidence: "dual-renderer",
         contract:
             "Compose consumer transform text around Motion's generated transform each frame.",
         boundary:
-            "Consumer closures are not lifecycle-managed callables in the main-thread declarative style path; tracked in issue #55.",
+            "Plain closures are compiled from the background and must compose values into a string; add the 'main thread' directive to compute with or branch on values.",
+    },
+    {
+        id: "easing-functions",
+        group: "Targets",
+        api: "transition.ease (function / function[])",
+        status: "supported",
+        evidence: "dual-renderer",
+        contract:
+            "Shape each keyframe segment with a consumer easing callback.",
+        boundary:
+            "Callbacks are sampled into an equivalent main-thread easing (as Motion does for WAAPI), so they must be pure functions of progress.",
     },
     {
         id: "keyframes",
@@ -3921,7 +3955,7 @@ export const CONFORMANCE_PRIORITIES: readonly GapPriority[] = [
         reactLynx: 4,
         css: 0,
         rationale:
-            "Useful per-segment customization is blocked on generic nested callable hydration across the background/main boundary.",
+            "Pure easing callbacks are sampled in the background into an equivalent main-thread easing, the technique motion-dom already uses for WAAPI.",
         issue: "https://github.com/Huxpro/motion/issues/37",
     },
     {
@@ -3932,7 +3966,7 @@ export const CONFORMANCE_PRIORITIES: readonly GapPriority[] = [
         reactLynx: 4,
         css: 0,
         rationale:
-            "Useful transform composition escape hatch requires an arbitrary consumer closure to run on every main-thread style frame.",
+            "Main Thread Function templates run per frame; plain string-composition templates are compiled into value slots filled on the main thread.",
         issue: "https://github.com/Huxpro/motion/issues/55",
     },
     {
@@ -5553,10 +5587,36 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         title: "Rebase onto Motion 13.4.5 and lynx-stack main",
         kind: "architecture",
         status: "verified",
-        motionPr: 0,
+        motionPr: 108,
         caseIds: [],
         lossBefore: 6,
         lossAfter: 6,
         note: "Harness rebased onto motiondivision/motion v13.4.6 (351 upstream commits); Web baseline and source provenance move from framer-motion 13.0.0 / motion 12.40.0 to 13.4.5, with all 76 tracked upstream test files present at v13.4.5 · lynx-stack main 4f63dfd now carries the MainThreadObject runtime (#3788/#3789/#4064), so the 013e20e declarative Motion implementation is ported onto it (defineMainThreadObjectType + downcast, background MotionValue.set forwarded through runOnMainThread) and vendored as an exact package set · package 160/160, complete dual-renderer suite 75/75 and portal suite 8/8 on Rspeedy 0.18 / Rsbuild 2 · no case status changes, so loss stays 6.",
+    },
+    {
+        id: "lynx-motion-easing-callbacks",
+        date: "2026-09-29",
+        title: "Easing callbacks and ease arrays",
+        kind: "capability",
+        status: "verified",
+        motionPr: 108,
+        issue: 37,
+        caseIds: ["transitions/easing-function-array"],
+        lossBefore: 6,
+        lossAfter: 5,
+        note: "I3/F2 · lynx-stack patch 3fbeed7 encodes transitions for the main thread in one place: pure easing callbacks are sampled into a 128-segment table and rebuilt as main-thread easings (the motion-dom WAAPI technique), and repeat: Infinity now survives value-specific transitions · package test fails before (the first segment follows the default curve) and passes after, full package 165/165 · dual-renderer case holds x at 0 through the first 700ms, trails linear at 1.2s, settles at 200 and reports both callbacks in Web and Lynx for Web; the same spec fails on the previous vendored build · blocked → conformant.",
+    },
+    {
+        id: "lynx-motion-transform-template",
+        date: "2026-09-29",
+        title: "transformTemplate",
+        kind: "capability",
+        status: "verified",
+        motionPr: 108,
+        issue: 55,
+        caseIds: ["targets/transform-template"],
+        lossBefore: 5,
+        lossAfter: WEIGHTED_LOSS,
+        note: "I4/F2 · lynx-stack patch 08aea53 installs the template on the main-thread element so every generated transform passes through it: Main Thread Functions run per frame with the latest unit-bearing values, plain string-composition closures compile into value slots checked against a real first-frame call, and the first frame calls the consumer template directly · package tests fail before and pass after, full package 168/168 · both renderers settle the upstream template at translateY(30px) translateX(30px) and a main-thread template computes x/2 = 15px; the same spec fails on the previous vendored build · blocked → conformant.",
     },
 ]

@@ -1,0 +1,441 @@
+From 3fbeed7afbb6f520312c6bd3fb56ee73b4a50332 Mon Sep 17 00:00:00 2001
+From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 11:50:16 +0000
+Subject: [PATCH 2/3] feat(motion): support easing callbacks in declarative
+ transitions
+
+Transitions reach the main thread as JSON, which drops easing callbacks and
+turns Infinity into null. Encode both in one place: easing callbacks are
+sampled into a piecewise-linear table and rebuilt on the main thread, and
+repeat: Infinity is preserved at every transition level. Also bind the base
+animate completion dispatcher while the worklet is executing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .changeset/motion-easing-callbacks.md         |   5 +
+ .../motion/__tests__/declarative.test.tsx     |  42 ++++++
+ .../__tests__/workletTransition.test.ts       |  60 ++++++++
+ packages/motion/src/declarative/motion.tsx    |  66 ++++-----
+ .../src/declarative/workletTransition.ts      | 138 ++++++++++++++++++
+ 5 files changed, 271 insertions(+), 40 deletions(-)
+ create mode 100644 .changeset/motion-easing-callbacks.md
+ create mode 100644 packages/motion/__tests__/workletTransition.test.ts
+ create mode 100644 packages/motion/src/declarative/workletTransition.ts
+
+diff --git a/.changeset/motion-easing-callbacks.md b/.changeset/motion-easing-callbacks.md
+new file mode 100644
+index 000000000..64b3c84e5
+--- /dev/null
++++ b/.changeset/motion-easing-callbacks.md
+@@ -0,0 +1,5 @@
++---
++"@lynx-js/motion": patch
++---
++
++Support easing callbacks in declarative transitions, including per-keyframe `ease` arrays and value-specific transitions. Callbacks are sampled into an equivalent main-thread easing, as Motion does for WAAPI, and `repeat: Infinity` now also survives value-specific transitions.
+diff --git a/packages/motion/__tests__/declarative.test.tsx b/packages/motion/__tests__/declarative.test.tsx
+index 006c6a3cc..275d879a0 100644
+--- a/packages/motion/__tests__/declarative.test.tsx
++++ b/packages/motion/__tests__/declarative.test.tsx
+@@ -884,6 +884,48 @@ describe('declarative Motion', () => {
+     );
+   });
+ 
++  test('keyframes accept an array of easing callbacks', async () => {
++    const firstSegment = vi.fn((progress: number) => {
++      void progress;
++      return 0;
++    });
++    const secondSegment = vi.fn((progress: number) => progress);
++    function App() {
++      return (
++        <motion.view
++          data-testid='box'
++          animate={{ x: [0, 100, 200] }}
++          transition={{
++            duration: 0.2,
++            ease: [firstSegment, secondSegment],
++          }}
++        />
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    // The first callback maps every progress to 0, so the first segment
++    // holds its start keyframe rather than following the default easing.
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('box').getAttribute('style')).not.toContain(
++      'translateX(',
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 250));
++    });
++    expect(firstSegment).toHaveBeenCalled();
++    expect(secondSegment).toHaveBeenCalled();
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(200px)',
++    );
++  });
++
+   test('routes value-specific transitions by animated property', async () => {
+     function App() {
+       const [active, setActive] = useState(false);
+diff --git a/packages/motion/__tests__/workletTransition.test.ts b/packages/motion/__tests__/workletTransition.test.ts
+new file mode 100644
+index 000000000..3b290cc27
+--- /dev/null
++++ b/packages/motion/__tests__/workletTransition.test.ts
+@@ -0,0 +1,60 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import { describe, expect, test } from 'vitest';
++
++import {
++  fromWorkletTransition,
++  toWorkletTransition,
++} from '../src/declarative/workletTransition.js';
++
++function roundTrip<T>(transition: T): T {
++  return fromWorkletTransition(
++    JSON.parse(JSON.stringify(toWorkletTransition(transition))) as T,
++  );
++}
++
++describe('worklet transitions', () => {
++  test('keep JSON-safe transitions by identity', () => {
++    const transition = { duration: 0.2, ease: [0.4, 0, 0.2, 1] };
++    expect(toWorkletTransition(transition)).toBe(transition);
++    expect(fromWorkletTransition(transition)).toBe(transition);
++  });
++
++  test('preserve infinite repeat at the top level and per value', () => {
++    const decoded = roundTrip({
++      repeat: Number.POSITIVE_INFINITY,
++      x: { repeat: Number.POSITIVE_INFINITY, duration: 1 },
++    });
++    expect(decoded.repeat).toBe(Number.POSITIVE_INFINITY);
++    expect(decoded.x.repeat).toBe(Number.POSITIVE_INFINITY);
++  });
++
++  test('sample easing callbacks into equivalent main-thread functions', () => {
++    const easeIn = (progress: number) => progress * progress;
++    const decoded = roundTrip({
++      ease: easeIn,
++      opacity: { ease: ['linear', easeIn] },
++    });
++    const ease = decoded.ease as unknown as (progress: number) => number;
++    for (const progress of [0, 0.1, 0.33, 0.5, 0.9, 1]) {
++      expect(ease(progress)).toBeCloseTo(easeIn(progress), 4);
++    }
++    const perValue = decoded.opacity.ease as unknown as [
++      string,
++      (progress: number) => number,
++    ];
++    expect(perValue[0]).toBe('linear');
++    expect(perValue[1](0.5)).toBeCloseTo(0.25, 4);
++  });
++
++  test('keep overshooting easing output', () => {
++    const overshoot = (progress: number) =>
++      progress + Math.sin(progress * Math.PI) * 0.5;
++    const ease = roundTrip({ ease: overshoot }).ease as unknown as (
++      progress: number,
++    ) => number;
++    expect(ease(0.5)).toBeCloseTo(1, 3);
++  });
++});
+diff --git a/packages/motion/src/declarative/motion.tsx b/packages/motion/src/declarative/motion.tsx
+index 00da7648c..b7e290010 100644
+--- a/packages/motion/src/declarative/motion.tsx
++++ b/packages/motion/src/declarative/motion.tsx
+@@ -57,6 +57,10 @@ import type {
+   MotionTransition,
+   MotionViewProps,
+ } from './types.js';
++import {
++  fromWorkletTransition,
++  toWorkletTransition,
++} from './workletTransition.js' with { runtime: 'shared' };
+ 
+ interface MotionVariantContextValue {
+   initial?: MotionDefinition | false;
+@@ -360,38 +364,23 @@ function useMotionHostProps<Props extends MotionProps>(
+   );
+   const workletAnimateTransition = useMemo(
+     () =>
+-      inheritedDelay && resolvedAnimate.transition?.delay === undefined
+-        ? {
+-          ...resolvedAnimate.transition,
+-          delay: inheritedDelay,
+-          ...(resolvedAnimate.transition?.repeat === Number.POSITIVE_INFINITY
+-            ? { repeat: -1 }
+-            : {}),
+-        }
+-        : (resolvedAnimate.transition?.repeat === Number.POSITIVE_INFINITY
+-          ? { ...resolvedAnimate.transition, repeat: -1 }
+-          : resolvedAnimate.transition),
++      toWorkletTransition(
++        inheritedDelay && resolvedAnimate.transition?.delay === undefined
++          ? { ...resolvedAnimate.transition, delay: inheritedDelay }
++          : resolvedAnimate.transition,
++      ),
+     [inheritedDelay, resolvedAnimate.transition],
+   );
+   const workletInitialTransition = useMemo(
+-    () =>
+-      resolvedInitialMotion?.transition?.repeat === Number.POSITIVE_INFINITY
+-        ? { ...resolvedInitialMotion.transition, repeat: -1 }
+-        : resolvedInitialMotion?.transition,
++    () => toWorkletTransition(resolvedInitialMotion?.transition),
+     [resolvedInitialMotion?.transition],
+   );
+   const workletTapTransition = useMemo(
+-    () =>
+-      resolvedTap.transition?.repeat === Number.POSITIVE_INFINITY
+-        ? { ...resolvedTap.transition, repeat: -1 }
+-        : resolvedTap.transition,
++    () => toWorkletTransition(resolvedTap.transition),
+     [resolvedTap.transition],
+   );
+   const workletHoverTransition = useMemo(
+-    () =>
+-      resolvedHover.transition?.repeat === Number.POSITIVE_INFINITY
+-        ? { ...resolvedHover.transition, repeat: -1 }
+-        : resolvedHover.transition,
++    () => toWorkletTransition(resolvedHover.transition),
+     [resolvedHover.transition],
+   );
+   const motionValues = useMemo(
+@@ -536,9 +525,7 @@ function useMotionHostProps<Props extends MotionProps>(
+         return;
+       }
+ 
+-      const resolvedOptions = (options?.repeat === -1
+-        ? { ...options, repeat: Number.POSITIVE_INFINITY }
+-        : options) ?? {};
++      const resolvedOptions = fromWorkletTransition(options) ?? {};
+       const values = { ...motionValueBindings };
+       const targetValues = (target ?? {}) as Record<string, unknown>;
+       const ownedTargetValues = {
+@@ -736,13 +723,18 @@ function useMotionHostProps<Props extends MotionProps>(
+           applyAnimateTransitionEnd();
+         });
+       } else if (completionPromises.length > 0 && animate !== undefined) {
++        // Bind while this worklet is still executing on MTS; the promise
++        // settles later from Motion's animation scheduler.
++        const reportAnimationComplete = onAnimationComplete
++          ? runOnBackground(onAnimationComplete)
++          : undefined;
+         void Promise.all(completionPromises).then(() => {
+           if (animationGenerationRef.current !== animationGeneration) {
+             return;
+           }
+           applyAnimateTransitionEnd();
+-          if (onAnimationComplete) {
+-            void runOnBackground(onAnimationComplete)(animate);
++          if (reportAnimationComplete) {
++            void reportAnimationComplete(animate);
+           }
+         });
+       }
+@@ -845,9 +837,8 @@ function useMotionHostProps<Props extends MotionProps>(
+     const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
+     let startedAnimationCount = 0;
+     let completeTapWithoutAnimation: (() => void) | undefined;
+-    const resolvedTransition = (workletTapTransition?.repeat === -1
+-      ? { ...workletTapTransition, repeat: Number.POSITIVE_INFINITY }
+-      : workletTapTransition) ?? {};
++    const resolvedTransition = fromWorkletTransition(workletTapTransition)
++      ?? {};
+     // Keep animation handles out of the MTS snapshot captured by a ReactLynx
+     // rerender triggered from lifecycle callbacks.
+     if (
+@@ -997,9 +988,7 @@ function useMotionHostProps<Props extends MotionProps>(
+       : (resolvedAnimate.target
+         ? workletAnimateTransition
+         : workletInitialTransition);
+-    const resolvedTransition = (restingTransition?.repeat === -1
+-      ? { ...restingTransition, repeat: Number.POSITIVE_INFINITY }
+-      : restingTransition) ?? {};
++    const resolvedTransition = fromWorkletTransition(restingTransition) ?? {};
+     const restingValues: Record<string, unknown> = {};
+     for (const key in targetValues) {
+       let restingValue = animateValues?.[key] ?? initialValues[key];
+@@ -1160,9 +1149,8 @@ function useMotionHostProps<Props extends MotionProps>(
+     const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
+     let startedAnimationCount = 0;
+     let completeHoverWithoutAnimation: (() => void) | undefined;
+-    const resolvedTransition = (workletHoverTransition?.repeat === -1
+-      ? { ...workletHoverTransition, repeat: Number.POSITIVE_INFINITY }
+-      : workletHoverTransition) ?? {};
++    const resolvedTransition = fromWorkletTransition(workletHoverTransition)
++      ?? {};
+     const isLynxForWeb = typeof SystemInfo !== 'undefined'
+       && String(SystemInfo.platform) === 'web';
+     if (
+@@ -1303,9 +1291,7 @@ function useMotionHostProps<Props extends MotionProps>(
+     const restingTransition = resolvedAnimate.target
+       ? workletAnimateTransition
+       : workletInitialTransition;
+-    const resolvedTransition = (restingTransition?.repeat === -1
+-      ? { ...restingTransition, repeat: Number.POSITIVE_INFINITY }
+-      : restingTransition) ?? {};
++    const resolvedTransition = fromWorkletTransition(restingTransition) ?? {};
+     const restingValues: Record<string, unknown> = {};
+     for (const key in hoverValues) {
+       let restingValue = animateValues?.[key] ?? initialValues[key];
+diff --git a/packages/motion/src/declarative/workletTransition.ts b/packages/motion/src/declarative/workletTransition.ts
+new file mode 100644
+index 000000000..fd11ce17c
+--- /dev/null
++++ b/packages/motion/src/declarative/workletTransition.ts
+@@ -0,0 +1,138 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++/**
++ * Transitions cross from the background runtime to the main thread as JSON.
++ * Two Motion values do not survive that trip: `Infinity` becomes `null`, and
++ * easing callbacks are dropped. This module encodes both in the background
++ * and restores them on the main thread.
++ *
++ * Easing callbacks are pure functions of progress, so they are sampled into a
++ * piecewise-linear lookup table, the same technique motion-dom uses when it
++ * hands a JavaScript easing function to WAAPI as CSS `linear()`.
++ */
++
++const SAMPLED_EASE = '__lynxSampledEase';
++const INFINITE_REPEAT = -1;
++const EASE_SAMPLES = 128;
++
++type TransitionRecord = Record<string, unknown>;
++
++interface SampledEase {
++  [SAMPLED_EASE]: number[];
++}
++
++function isRecord(value: unknown): value is TransitionRecord {
++  return typeof value === 'object' && value !== null && !Array.isArray(value);
++}
++
++function sampleEase(ease: (progress: number) => number): SampledEase {
++  const samples: number[] = [];
++  for (let i = 0; i <= EASE_SAMPLES; i++) {
++    samples.push(ease(i / EASE_SAMPLES));
++  }
++  return { [SAMPLED_EASE]: samples };
++}
++
++function encodeEase(ease: unknown): unknown {
++  if (typeof ease === 'function') {
++    return sampleEase(ease as (progress: number) => number);
++  }
++  if (Array.isArray(ease) && ease.some(item => typeof item === 'function')) {
++    return ease.map(item => encodeEase(item));
++  }
++  return ease;
++}
++
++function encodeRecord(transition: TransitionRecord): TransitionRecord {
++  let encoded: TransitionRecord | undefined;
++  for (const key in transition) {
++    const value = transition[key];
++    let next = value;
++    if (key === 'ease') {
++      next = encodeEase(value);
++    } else if (key === 'repeat' && value === Number.POSITIVE_INFINITY) {
++      next = INFINITE_REPEAT;
++    } else if (isRecord(value)) {
++      // Value-specific transitions (`transition.x`, `transition.default`).
++      next = encodeRecord(value);
++    }
++    if (next !== value) {
++      encoded ??= { ...transition };
++      encoded[key] = next;
++    }
++  }
++  return encoded ?? transition;
++}
++
++/**
++ * Prepare a transition for `runOnMainThread`. Returns the input unchanged when
++ * nothing needs encoding, so memoized transitions keep their identity.
++ *
++ * @internal
++ */
++export function toWorkletTransition<T>(transition: T): T {
++  return isRecord(transition)
++    ? encodeRecord(transition) as T
++    : transition;
++}
++
++function isSampledEase(value: unknown): value is SampledEase {
++  return isRecord(value) && Array.isArray(value[SAMPLED_EASE]);
++}
++
++function decodeEase(ease: unknown): unknown {
++  if (isSampledEase(ease)) {
++    const samples = ease[SAMPLED_EASE];
++    const segments = samples.length - 1;
++    return (progress: number) => {
++      if (progress <= 0) {
++        return samples[0];
++      }
++      if (progress >= 1) {
++        return samples[segments];
++      }
++      const position = progress * segments;
++      const index = Math.floor(position);
++      const from = samples[index]!;
++      return from + (samples[index + 1]! - from) * (position - index);
++    };
++  }
++  if (Array.isArray(ease) && ease.some(item => isSampledEase(item))) {
++    return ease.map(item => decodeEase(item));
++  }
++  return ease;
++}
++
++function decodeRecord(transition: TransitionRecord): TransitionRecord {
++  let decoded: TransitionRecord | undefined;
++  for (const key in transition) {
++    const value = transition[key];
++    let next = value;
++    if (key === 'ease') {
++      next = decodeEase(value);
++    } else if (key === 'repeat' && value === INFINITE_REPEAT) {
++      next = Number.POSITIVE_INFINITY;
++    } else if (isRecord(value)) {
++      next = decodeRecord(value);
++    }
++    if (next !== value) {
++      decoded ??= { ...transition };
++      decoded[key] = next;
++    }
++  }
++  return decoded ?? transition;
++}
++
++/**
++ * Restore a transition encoded by {@link toWorkletTransition} on the main
++ * thread.
++ *
++ * @internal
++ */
++export function fromWorkletTransition<T>(transition: T): T {
++  return isRecord(transition)
++    ? decodeRecord(transition) as T
++    : transition;
++}
+-- 
+2.43.0
+

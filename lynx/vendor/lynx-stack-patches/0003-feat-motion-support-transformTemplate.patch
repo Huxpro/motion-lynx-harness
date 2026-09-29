@@ -1,0 +1,592 @@
+From 08aea53e8e3d292e99383122fc46db2b3fd41c25 Mon Sep 17 00:00:00 2001
+From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 11:53:18 +0000
+Subject: [PATCH 3/3] feat(motion): support transformTemplate
+
+transformTemplate runs on every rendered frame on the main thread, but
+consumer closures live in the background runtime. Main Thread Functions are
+called directly with the latest transform values. Plain closures are
+compiled once with placeholder values into literal parts and value slots,
+verified against a real call on the first-frame values, and filled on the
+main thread. The first frame calls the consumer template directly.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .changeset/motion-transform-template.md       |   5 +
+ .../motion/__tests__/declarative.test.tsx     |  72 ++++++++++
+ packages/motion/src/declarative/motion.tsx    |  66 ++++++++-
+ packages/motion/src/declarative/style.ts      |  75 +++++++---
+ .../src/declarative/transformTemplate.ts      | 134 ++++++++++++++++++
+ packages/motion/src/declarative/types.ts      |  15 ++
+ packages/motion/src/index.ts                  |   1 +
+ packages/motion/src/polyfill/element.ts       |  11 ++
+ 8 files changed, 359 insertions(+), 20 deletions(-)
+ create mode 100644 .changeset/motion-transform-template.md
+ create mode 100644 packages/motion/src/declarative/transformTemplate.ts
+
+diff --git a/.changeset/motion-transform-template.md b/.changeset/motion-transform-template.md
+new file mode 100644
+index 000000000..05141b65a
+--- /dev/null
++++ b/.changeset/motion-transform-template.md
+@@ -0,0 +1,5 @@
++---
++"@lynx-js/motion": patch
++---
++
++Support `transformTemplate` on declarative Motion components. Main Thread Functions are called with Motion's latest transform values on every frame; plain templates that compose values into a string are compiled in the background and filled on the main thread, and render the first frame directly.
+diff --git a/packages/motion/__tests__/declarative.test.tsx b/packages/motion/__tests__/declarative.test.tsx
+index 275d879a0..535335456 100644
+--- a/packages/motion/__tests__/declarative.test.tsx
++++ b/packages/motion/__tests__/declarative.test.tsx
+@@ -926,6 +926,78 @@ describe('declarative Motion', () => {
+     );
+   });
+ 
++  test('applies a custom transform template', async () => {
++    function App() {
++      return (
++        <motion.view
++          data-testid='box'
++          initial={{ x: 10 }}
++          animate={{ x: 30 }}
++          transition={{ duration: 0.01 }}
++          transformTemplate={({ x }, generated) =>
++            `translateY(${x}) ${generated}`}
++        />
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'transform: translateY(30px) translateX(30px)',
++    );
++  });
++
++  test('renders the first frame through a transform template', () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='box'
++        initial={{ x: 10, rotate: 45 }}
++        transformTemplate={({ x, rotate }) =>
++          `rotate(${rotate}) translateX(${x})`}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'transform: rotate(45deg) translateX(10px)',
++    );
++  });
++
++  test('calls a main-thread transform template with the latest values', async () => {
++    function App() {
++      return (
++        <motion.view
++          data-testid='box'
++          initial={{ x: 0 }}
++          animate={{ x: 40 }}
++          transition={{ duration: 0.01 }}
++          transformTemplate={({ x }) => {
++            'main thread';
++            return `translateX(${Number.parseFloat(x ?? '0') / 2}px)`;
++          }}
++        />
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'transform: translateX(20px)',
++    );
++  });
++
+   test('routes value-specific transitions by animated property', async () => {
+     function App() {
+       const [active, setActive] = useState(false);
+diff --git a/packages/motion/src/declarative/motion.tsx b/packages/motion/src/declarative/motion.tsx
+index b7e290010..0795dbc78 100644
+--- a/packages/motion/src/declarative/motion.tsx
++++ b/packages/motion/src/declarative/motion.tsx
+@@ -13,9 +13,12 @@ import type {
+ } from 'motion-dom';
+ import {
+   animateMotionValue as createMotionValueAnimation,
++  getValueAsType,
+   getValueTransition,
+   motionValue,
++  numberValueTypes,
+   styleEffect,
++  transformProps,
+ } from 'motion-dom' with {
+   runtime: 'shared',
+ };
+@@ -42,10 +45,16 @@ import {
+   collectMotionValues,
+   motionDefinitionKey,
+   resolveInitialStyle,
++  resolveInitialTransform,
+   resolveInitialValues,
+   resolveMotionDefinition,
+   splitMotionTarget,
+ } from './style.js';
++import {
++  applyTransformTemplate,
++  compileTransformTemplate,
++} from './transformTemplate.js' with { runtime: 'shared' };
++import type { CompiledTransformTemplate } from './transformTemplate.js';
+ import type {
+   MotionComponentProps,
+   MotionDefinition,
+@@ -240,6 +249,7 @@ function useMotionHostProps<Props extends MotionProps>(
+     inherit: _inherit,
+     style,
+     transition,
++    transformTemplate,
+     whileTap,
+     whileHover,
+     variants,
+@@ -343,9 +353,33 @@ function useMotionHostProps<Props extends MotionProps>(
+         style,
+         resolvedInitialTarget,
+         initialFalseAnimateTarget,
++        transformTemplate,
+       ),
+-    [initialFalseAnimateTarget, resolvedInitialTarget, style],
++    [
++      initialFalseAnimateTarget,
++      resolvedInitialTarget,
++      style,
++      transformTemplate,
++    ],
+   );
++  const compiledTransformTemplate = useMemo(() => {
++    const sample = resolveInitialTransform(
++      style,
++      resolvedInitialTarget,
++      initialFalseAnimateTarget,
++    );
++    return compileTransformTemplate(
++      transformTemplate,
++      sample.transform,
++      sample.generated,
++    );
++  }, [
++    initialFalseAnimateTarget,
++    resolvedInitialTarget,
++    style,
++    transformTemplate,
++  ]);
++  const transformTemplateKey = motionDefinitionKey(compiledTransformTemplate);
+   const initialValues = useMemo(
+     () =>
+       resolveInitialValues(
+@@ -500,6 +534,7 @@ function useMotionHostProps<Props extends MotionProps>(
+       removedTargetFallbackValues: Record<string, unknown>,
+       restoreRemovedTargetIdentity: boolean,
+       shouldAnimate: boolean,
++      template: CompiledTransformTemplate | undefined,
+     ) {
+       'main thread';
+ 
+@@ -644,9 +679,30 @@ function useMotionHostProps<Props extends MotionProps>(
+           element: MainThread.Element,
+         ) => Element;
+         motionElement = new ElementConstructor(elementRef.current);
++        installTransformTemplate(motionElement);
+         styleCleanupRef.current = styleEffect(motionElement, values);
+       }
+ 
++      function installTransformTemplate(element: Element) {
++        if (!template) {
++          return;
++        }
++        (element as unknown as {
++          transformTemplate?: (generated: string) => string;
++        }).transformTemplate = generated => {
++          const transform: Record<string, string> = {};
++          for (const key in values) {
++            if (transformProps.has(key)) {
++              transform[key] = String(getValueAsType(
++                values[key]!.get(),
++                numberValueTypes[key],
++              ));
++            }
++          }
++          return applyTransformTemplate(template, transform, generated);
++        };
++      }
++
+       function applyAnimateTransitionEnd() {
+         let addedValue = false;
+         for (const key in transitionEnd) {
+@@ -665,7 +721,10 @@ function useMotionHostProps<Props extends MotionProps>(
+           const ElementConstructor = globalThis.Element as unknown as new(
+             element: MainThread.Element,
+           ) => Element;
+-          motionElement ??= new ElementConstructor(elementRef.current);
++          if (!motionElement) {
++            motionElement = new ElementConstructor(elementRef.current);
++            installTransformTemplate(motionElement);
++          }
+           styleCleanupRef.current?.();
+           styleCleanupRef.current = styleEffect(motionElement, values);
+         }
+@@ -750,6 +809,7 @@ function useMotionHostProps<Props extends MotionProps>(
+       removedAnimateFallbackValues,
+       inheritsAnimate,
+       shouldAnimateTarget,
++      compiledTransformTemplate,
+     );
+ 
+     function stopMotionStyles() {
+@@ -777,7 +837,7 @@ function useMotionHostProps<Props extends MotionProps>(
+     };
+     // Serialized targets and value IDs avoid restarting unchanged inline
+     // definitions while keeping animate and style transforms in one renderer.
+-  }, [animationKey, styleKey]);
++  }, [animationKey, styleKey, transformTemplateKey]);
+ 
+   function startTapAnimation(event: MainThread.TouchEvent) {
+     'main thread';
+diff --git a/packages/motion/src/declarative/style.ts b/packages/motion/src/declarative/style.ts
+index e9ae7ac8a..c18ea8704 100644
+--- a/packages/motion/src/declarative/style.ts
++++ b/packages/motion/src/declarative/style.ts
+@@ -11,6 +11,7 @@ import type {
+   MotionStyle,
+   MotionStyleValue,
+   MotionTarget,
++  MotionTransformTemplate,
+   MotionTransition,
+   MotionVariants,
+ } from './types.js';
+@@ -113,15 +114,11 @@ function appendResolvedValues(
+   }
+ }
+ 
+-export function resolveInitialStyle(
+-  style: MotionStyle | string | undefined,
++function collectInitialStyle(
++  style: MotionStyle | undefined,
+   initial: MotionTarget | false | undefined,
+-  animate?: MotionTarget,
+-): CSSProperties | string | undefined {
+-  if (typeof style === 'string') {
+-    return style;
+-  }
+-
++  animate: MotionTarget | undefined,
++) {
+   const output: Record<string, unknown> = {};
+   const transforms: Record<string, string | number> = {};
+   const transformOrigin: Partial<
+@@ -150,17 +147,61 @@ export function resolveInitialStyle(
+     appendInitialValues((initial ?? {}) as Record<string, unknown>);
+   }
+ 
+-  const generatedTransform = Object.entries(transforms)
+-    .map(([key, value]) => {
+-      const name = transformAliases[key] ?? key;
+-      return `${name}(${formatTransformValue(key, value)})`;
+-    })
+-    .join(' ');
+-  if (generatedTransform) {
++  const transformValues: Record<string, string> = {};
++  const generated: string[] = [];
++  for (const key in transforms) {
++    const value = formatTransformValue(key, transforms[key]!);
++    transformValues[key] = value;
++    generated.push(`${transformAliases[key] ?? key}(${value})`);
++  }
++  return {
++    output,
++    transformOrigin,
++    transformValues,
++    generatedTransform: generated.join(' '),
++  };
++}
++
++/**
++ * The first-frame transform values (with units) and Motion's generated
++ * transform string, as a `transformTemplate` observes them.
++ */
++export function resolveInitialTransform(
++  style: MotionStyle | string | undefined,
++  initial: MotionTarget | false | undefined,
++  animate?: MotionTarget,
++): { transform: Record<string, string>; generated: string } {
++  const { transformValues, generatedTransform } = collectInitialStyle(
++    typeof style === 'string' ? undefined : style,
++    initial,
++    animate,
++  );
++  return { transform: transformValues, generated: generatedTransform };
++}
++
++export function resolveInitialStyle(
++  style: MotionStyle | string | undefined,
++  initial: MotionTarget | false | undefined,
++  animate?: MotionTarget,
++  transformTemplate?: MotionTransformTemplate,
++): CSSProperties | string | undefined {
++  if (typeof style === 'string') {
++    return style;
++  }
++
++  const { output, transformOrigin, transformValues, generatedTransform } =
++    collectInitialStyle(style, initial, animate);
++  // A plain template runs here directly; a Main Thread Function is not
++  // callable from the background runtime and applies from the first frame.
++  const transform = typeof transformTemplate === 'function'
++    ? transformTemplate(transformValues, generatedTransform)
++    : generatedTransform;
++  if (transform) {
+     const existingTransform = output['transform'];
+     output['transform'] = typeof existingTransform === 'string'
+-      ? `${existingTransform} ${generatedTransform}`
+-      : generatedTransform;
++        && typeof transformTemplate !== 'function'
++      ? `${existingTransform} ${transform}`
++      : transform;
+   }
+   if (Object.keys(transformOrigin).length > 0) {
+     const originX = transformOrigin.originX ?? '50%';
+diff --git a/packages/motion/src/declarative/transformTemplate.ts b/packages/motion/src/declarative/transformTemplate.ts
+new file mode 100644
+index 000000000..fab30d8ae
+--- /dev/null
++++ b/packages/motion/src/declarative/transformTemplate.ts
+@@ -0,0 +1,134 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import type { MotionTransformTemplate } from './types.js';
++
++/**
++ * `transformTemplate` runs for every rendered frame, which happens on the main
++ * thread, while consumer closures live in the background runtime.
++ *
++ * - A Main Thread Function (`'main thread'` directive) is called directly on
++ *   the main thread with Motion's latest transform values.
++ * - A plain closure is compiled in the background: it is invoked once with
++ *   placeholder values, and the returned string becomes a list of literal
++ *   parts and value slots that the main thread fills in each frame. This is
++ *   exact for templates that compose values into a string, which is how
++ *   Motion documents the API; templates that branch on or compute with the
++ *   values need the `'main thread'` directive.
++ */
++export type CompiledTransformTemplate =
++  | { parts: (string | { key: string })[] }
++  | { worklet: MotionTransformTemplate };
++
++const SLOT_START = '\u0002';
++const SLOT_END = '\u0003';
++const GENERATED_SLOT = '';
++
++function isMainThreadFunction(value: unknown): boolean {
++  return typeof value === 'object'
++    && value !== null
++    && typeof (value as { _wkltId?: unknown })._wkltId === 'string';
++}
++
++function slot(key: string): string {
++  return `${SLOT_START}${key}${SLOT_END}`;
++}
++
++function fill(
++  parts: (string | { key: string })[],
++  transform: Readonly<Record<string, string>>,
++  generated: string,
++): string {
++  let output = '';
++  for (const part of parts) {
++    output += typeof part === 'string'
++      ? part
++      : (part.key === GENERATED_SLOT
++        ? generated
++        : String(transform[part.key]));
++  }
++  return output;
++}
++
++/**
++ * Compile a consumer template for the main thread.
++ *
++ * @param template - The consumer `transformTemplate`.
++ * @param sampleTransform - Real transform values used to check that the
++ *   compiled template reproduces the consumer function.
++ * @param sampleGenerated - Motion's generated transform for those values.
++ * @internal
++ */
++export function compileTransformTemplate(
++  template: MotionTransformTemplate | undefined,
++  sampleTransform: Readonly<Record<string, string>>,
++  sampleGenerated: string,
++): CompiledTransformTemplate | undefined {
++  if (template === undefined) {
++    return undefined;
++  }
++  if (isMainThreadFunction(template)) {
++    return { worklet: template };
++  }
++  if (typeof template !== 'function') {
++    return undefined;
++  }
++  const probe = new Proxy({} as Record<string, string>, {
++    get: (_target, key) => typeof key === 'string' ? slot(key) : undefined,
++  });
++  let probed: unknown;
++  try {
++    probed = template(probe, slot(GENERATED_SLOT));
++  } catch {
++    probed = undefined;
++  }
++  const parts: (string | { key: string })[] = [];
++  if (typeof probed === 'string') {
++    let cursor = 0;
++    while (cursor < probed.length) {
++      const start = probed.indexOf(SLOT_START, cursor);
++      if (start === -1) {
++        parts.push(probed.slice(cursor));
++        break;
++      }
++      const end = probed.indexOf(SLOT_END, start);
++      if (end === -1) {
++        break;
++      }
++      if (start > cursor) {
++        parts.push(probed.slice(cursor, start));
++      }
++      parts.push({ key: probed.slice(start + 1, end) });
++      cursor = end + 1;
++    }
++  }
++  const compiled = { parts };
++  if (
++    typeof probed !== 'string'
++    || fill(parts, sampleTransform, sampleGenerated)
++      !== template(sampleTransform, sampleGenerated)
++  ) {
++    console.warn(
++      '[@lynx-js/motion] transformTemplate must compose transform values into a string to run from the background runtime. Add the \'main thread\' directive to templates that compute with or branch on their values.',
++    );
++  }
++  return compiled;
++}
++
++/**
++ * Evaluate a compiled template on the main thread. `generated` is Motion's
++ * transform string, or `'none'` when every transform is at its default.
++ *
++ * @internal
++ */
++export function applyTransformTemplate(
++  template: CompiledTransformTemplate,
++  transform: Readonly<Record<string, string>>,
++  generated: string,
++): string {
++  const generatedTransform = generated === 'none' ? '' : generated;
++  return 'worklet' in template
++    ? template.worklet(transform, generatedTransform)
++    : fill(template.parts, transform, generatedTransform);
++}
+diff --git a/packages/motion/src/declarative/types.ts b/packages/motion/src/declarative/types.ts
+index 787207de0..3fc66ed5e 100644
+--- a/packages/motion/src/declarative/types.ts
++++ b/packages/motion/src/declarative/types.ts
+@@ -60,6 +60,15 @@ export type MotionVariants = Record<
+   MotionTarget | ((custom: unknown) => MotionTarget)
+ >;
+ 
++/**
++ * Build a custom `transform` from Motion's latest transform values (with
++ * units, e.g. `{ x: '30px' }`) and its generated transform string.
++ */
++export type MotionTransformTemplate = (
++  transform: Readonly<Record<string, string>>,
++  generatedTransform: string,
++) => string;
++
+ /** Pointer coordinates reported to declarative tap callbacks. */
+ export interface MotionTapInfo {
+   point: { x: number; y: number };
+@@ -99,6 +108,12 @@ export interface MotionProps {
+   transition?: MotionTransition;
+   /** Static styles and live MotionValue bindings. */
+   style?: MotionStyle | string;
++  /**
++   * Compose a custom transform around Motion's generated transform. Plain
++   * templates must only compose values into a string; add the
++   * `'main thread'` directive to compute with or branch on values.
++   */
++  transformTemplate?: MotionTransformTemplate;
+ }
+ 
+ export type MotionComponentProps<Props> =
+diff --git a/packages/motion/src/index.ts b/packages/motion/src/index.ts
+index 088961b3b..688ad99b2 100644
+--- a/packages/motion/src/index.ts
++++ b/packages/motion/src/index.ts
+@@ -32,6 +32,7 @@ export type {
+   MotionTapInfo,
+   MotionTarget,
+   MotionTextProps,
++  MotionTransformTemplate,
+   MotionTransition,
+   MotionVariants,
+   MotionViewProps,
+diff --git a/packages/motion/src/polyfill/element.ts b/packages/motion/src/polyfill/element.ts
+index 8484f692a..76f781ce3 100644
+--- a/packages/motion/src/polyfill/element.ts
++++ b/packages/motion/src/polyfill/element.ts
+@@ -14,6 +14,11 @@ function toCssPropertyName(name: string): string {
+ 
+ export class ElementCompt {
+   private element: MainThread.Element;
++  /**
++   * Rewrites Motion's generated `transform` before it reaches the element.
++   * Declarative components install this to implement `transformTemplate`.
++   */
++  public transformTemplate?: (generated: string) => string;
+ 
+   constructor(element: MainThread.Element) {
+     this.element = element;
+@@ -38,6 +43,9 @@ export class ElementCompt {
+     const styleObject = {} as StyleObject;
+ 
+     styleObject.setProperty = (property: string, value: string) => {
++      if (property === 'transform' && this.transformTemplate) {
++        value = this.transformTemplate(value);
++      }
+       if (property === 'transform' && value === 'none') {
+         return this.element.setStyleProperty('transform', 'scale(1, 1)');
+       }
+@@ -46,6 +54,9 @@ export class ElementCompt {
+     return new Proxy(styleObject, {
+       set: (target, prop, value) => {
+         if (typeof prop === 'string' && prop !== 'setProperty') {
++          if (prop === 'transform' && this.transformTemplate) {
++            value = this.transformTemplate(String(value));
++          }
+           if (prop === 'transform' && value === 'none') {
+             this.element.setStyleProperty('transform', 'scale(1, 1)');
+             return true;
+-- 
+2.43.0
+

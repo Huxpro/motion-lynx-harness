@@ -8,7 +8,7 @@ been rebased onto lynx-stack `main` upstream.
 | --- | --- |
 | `lynx-js-react-0.126.2.tgz` | lynx-stack `main` @ `4f63dfd` (MainThreadObject runtime #3788/#3789/#4064, wasm transform) |
 | `lynx-js-react-umd-0.126.2.tgz` | lynx-stack `main` @ `4f63dfd` |
-| `lynx-js-motion-0.0.6.tgz` | lynx-stack `main` @ `4f63dfd` + `lynx-stack-patches/*.patch` |
+| `lynx-js-motion-0.0.6.tgz` | lynx-stack `main` @ `4f63dfd` + `lynx-stack-patches/*.patch` (head recorded as `LYNX_STACK_BUILD.motion`) |
 
 `src/conformance/cases.ts` records the same commits in `LYNX_STACK_BUILD`, and
 the Gallery info panel prints them, so every published metric names the build
