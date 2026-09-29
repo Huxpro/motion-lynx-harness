@@ -10,19 +10,19 @@
     "test:parity": "playwright test"
   },
   "dependencies": {
-    "@lynx-js/css-serializer": "^0.1.7",
-    "@lynx-js/motion": "https://pkg.pr.new/@lynx-js/motion@013e20e",
-    "@lynx-js/react": "https://pkg.pr.new/@lynx-js/react@013e20e",
-    "@lynx-js/react-umd": "https://pkg.pr.new/@lynx-js/react-umd@013e20e",
-    "@lynx-js/web-core": "^0.23.0",
-    "@lynx-js/web-elements": "^0.12.7"
+    "@lynx-js/css-serializer": "^0.1.9",
+    "@lynx-js/motion": "file:vendor/lynx-js-motion-0.0.6.tgz",
+    "@lynx-js/react": "file:vendor/lynx-js-react-0.126.2.tgz",
+    "@lynx-js/react-umd": "file:vendor/lynx-js-react-umd-0.126.2.tgz",
+    "@lynx-js/web-core": "^0.26.2",
+    "@lynx-js/web-elements": "^0.12.12"
   },
   "devDependencies": {
-    "@lynx-js/preact-devtools": "5.0.1-20260525112551-dfe2d03",
-    "@lynx-js/qrcode-rsbuild-plugin": "^0.6.0",
-    "@lynx-js/react-rsbuild-plugin": "^0.18.1",
-    "@lynx-js/rspeedy": "^0.16.1",
-    "@lynx-js/types": "^4.1.0",
+    "@lynx-js/preact-devtools": "5.0.1-20260827072047-5f77e12",
+    "@lynx-js/qrcode-rsbuild-plugin": "^0.7.3",
+    "@lynx-js/react-rsbuild-plugin": "^0.20.3",
+    "@lynx-js/rspeedy": "^0.18.0",
+    "@lynx-js/types": "^4.3.0",
     "@playwright/test": "^1.61.1",
     "@rsbuild/plugin-type-check": "^1.5.0",
     "@types/react": "^18.3.28",

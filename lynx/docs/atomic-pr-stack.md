@@ -96,6 +96,23 @@ This keeps the implementation review concerned with runtime correctness while
 the harness review is concerned with upstream provenance and observable
 conformance.
 
+## 2026-09-29 rebase onto lynx-stack main
+
+The MainThreadObject runtime landed on lynx-stack `main` as
+[#3788](https://github.com/lynx-family/lynx-stack/pull/3788) and
+[#3789](https://github.com/lynx-family/lynx-stack/pull/3789), a separate
+implementation from the one carried by #3477/#3509. #3509 was rebased onto
+the September 4 `main` (head `bdc0a8c`) and adopted the `downcast()` API,
+but none of the conformance layers below were rebased with it, so a
+`pkg.pr.new` preview of #3509 alone would regress the manifest.
+
+The harness therefore measures an exact local build: `main` @ `4f63dfd`
+plus one patch that carries the `013e20e` declarative implementation onto
+the landed API (`vendor/lynx-stack-patches/`). The only semantic adaptation
+is that `main` has no `backgroundMethods`, so `useMotionValue` forwards
+background `set()` through `runOnMainThread`. Package 160/160, dual-renderer
+75/75 and portal 8/8 pass on that build.
+
 ## Current completion stack
 
 The live review stack was canonicalized on 2026-08-13. The operational source

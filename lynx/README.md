@@ -33,18 +33,22 @@ npm run build:evidence
 starts both the locked upstream Web reference and Lynx-for-Web, then uses
 headless Chromium to verify manifest-backed semantic assertions as well as the
 legacy live/infinite animation, variants, lifecycle, and gesture checks.
-The current dependency gate is the immutable `013e20e` preview set published
-by validation-only [lynx-stack#3491](https://github.com/lynx-family/lynx-stack/pull/3491);
-the complete suite passes 74/74 source-linked behaviors. Capability ownership
-for that immutable evidence remains with the historical atomic stack rather
-than the validation rollup. Current review topology is now
-`main → #3477 → #3509 → #3515…#3524`, summarized in the portal's Overview
-header; the full per-layer review state lives in
-[`docs/atomic-pr-stack.md`](./docs/atomic-pr-stack.md). Published metrics
-stay pinned until this canonical stack produces a matching immutable preview.
+The current dependency gate is an exact, vendored lynx-stack build: `main` @
+`4f63dfd`, which now carries the MainThreadObject runtime
+([#3788](https://github.com/lynx-family/lynx-stack/pull/3788),
+[#3789](https://github.com/lynx-family/lynx-stack/pull/3789)), plus the
+declarative Motion port in [`vendor/lynx-stack-patches/`](./vendor/). The
+previous immutable `013e20e` preview was built on the pre-merge #3477 runtime;
+its implementation is carried onto `main` rather than re-derived. See
+[`vendor/README.md`](./vendor/README.md) for the rebuild recipe. Historical
+capability ownership remains with the atomic stack recorded in
+[`docs/atomic-pr-stack.md`](./docs/atomic-pr-stack.md); that stack still has
+to be rebased onto `main` upstream before the vendored packages can be
+replaced by published ones.
 
-The Web reference in `web-reference/` is pinned to the same upstream Motion
-major as the lynx-stack preview package.
+The Web reference in `web-reference/` is pinned to `framer-motion@13.4.5`,
+the same release whose test sources every manifest case links to. The
+repository itself is rebased onto `motiondivision/motion` v13.4.6.
 
 ## Evidence portal
 

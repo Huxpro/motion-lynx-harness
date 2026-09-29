@@ -45,6 +45,8 @@ import {
     VARIANT_INHERIT_OPT_OUT_CASE,
     VARIANT_PROPAGATION_CASE,
     VISIBILITY_REVEAL_CASE,
+    LYNX_STACK_BUILD,
+    UPSTREAM_SOURCE_VERSION,
 } from "./conformance/cases.js"
 import { motion, useMotionValue } from "./motion/index.js"
 import "./App.css"
@@ -517,7 +519,7 @@ export function App() {
                     </view>
                     <view style={subClip}>
                         <text style={sub}>
-                            Lynx · @lynx-js/motion 013e20e
+                            Lynx · @lynx-js/motion {LYNX_STACK_BUILD.motion}
                         </text>
                     </view>
                     {infoOpen && (
@@ -526,10 +528,11 @@ export function App() {
                                 runtime: ReactLynx · Lynx for Web
                             </text>
                             <text style={infoLine}>
-                                package: @lynx-js/motion · preview 013e20e
+                                package: @lynx-js/motion · lynx-stack main{" "}
+                                {LYNX_STACK_BUILD.main} + {LYNX_STACK_BUILD.motion}
                             </text>
                             <text style={infoLine}>
-                                upstream: motion@12.40.0 sources
+                                upstream: motion@{UPSTREAM_SOURCE_VERSION} sources
                             </text>
                         </view>
                     )}

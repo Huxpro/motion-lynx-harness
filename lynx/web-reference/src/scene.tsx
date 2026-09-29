@@ -44,6 +44,8 @@ import {
     VARIANT_INHERIT_OPT_OUT_CASE,
     VARIANT_PROPAGATION_CASE,
     VISIBILITY_REVEAL_CASE,
+    UPSTREAM_SOURCE_VERSION,
+    WEB_BASELINE,
 } from "../../src/conformance/cases"
 
 /**
@@ -517,7 +519,7 @@ export function App() {
                         </div>
                     </div>
                     <div style={subClip}>
-                        <span style={sub}>Web · framer-motion@13.0.0</span>
+                        <span style={sub}>Web · {WEB_BASELINE}</span>
                     </div>
                     {infoOpen && (
                         <div id="gallery-info-panel" style={infoPanel}>
@@ -525,10 +527,10 @@ export function App() {
                                 runtime: Web reference (React DOM)
                             </span>
                             <span style={infoLine}>
-                                package: framer-motion@13.0.0
+                                package: {WEB_BASELINE}
                             </span>
                             <span style={infoLine}>
-                                upstream: motion@12.40.0 sources
+                                upstream: motion@{UPSTREAM_SOURCE_VERSION} sources
                             </span>
                         </div>
                     )}

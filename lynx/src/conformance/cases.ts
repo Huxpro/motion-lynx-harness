@@ -105,9 +105,28 @@ export interface CanonicalStackLayer {
     caveat?: string
 }
 
+/**
+ * Upstream Motion release whose test sources define every contract, and the
+ * published package the Web reference renders. The harness itself is rebased
+ * onto this release line, so provenance links and the executed baseline agree.
+ */
+export const UPSTREAM_SOURCE_VERSION = "13.4.5"
+export const WEB_BASELINE = `framer-motion@${UPSTREAM_SOURCE_VERSION}`
+
+/**
+ * Exact lynx-stack build under test. `main` already carries the
+ * MainThreadObject runtime (#3788/#3789); `motion` is the declarative Motion
+ * port applied on top of it and packed into `lynx/vendor/`.
+ */
+export const LYNX_STACK_BUILD = {
+    main: "4f63dfd",
+    motion: "162e563",
+} as const
+export const LYNX_BUILD_LABEL = `lynx-stack main ${LYNX_STACK_BUILD.main} + motion ${LYNX_STACK_BUILD.motion}`
+
 const source = (path: string, testName: string): UpstreamSource => ({
     repository: "motiondivision/motion",
-    sourceVersion: "12.40.0",
+    sourceVersion: UPSTREAM_SOURCE_VERSION,
     path,
     testName,
 })
@@ -274,7 +293,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/component.test.tsx",
             "renders custom component"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "custom component forwards host props and ref plumbing",
             "animate settles at opacity 1 and x 24",
@@ -300,7 +319,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "uses transition on subsequent renders"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "later target changes animate instead of jumping",
             "both renderers expose an intermediate frame before settling",
@@ -325,7 +344,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "animates previously unseen properties"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first target contains only x",
             "a later target introduces y and settles at its value",
@@ -351,7 +370,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "uses transitionEnd on subsequent renders"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the transitionEnd-only update applies its final opacity",
             "start and completion lifecycle fire once",
@@ -377,7 +396,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "applies applyOnEnd if set on initial"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the visible initial label resolves its target and transitionEnd",
             "transitionEnd overrides the ordinary initial target on the first frame",
@@ -402,7 +421,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "transitionEnd from instant animation does not override subsequent variant"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the on variant can apply display flex through transitionEnd",
             "the off variant restores display none",
@@ -427,7 +446,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "applies applyOnEnd and end of animation"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the target remains display block during color interpolation",
             "an intermediate blue-to-red frame is observable",
@@ -453,7 +472,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "when value is removed from animate, animates back to value originally defined in initial prop"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: ["opacity restores from 1 to the original initial value"],
         evidence: {
             gallery: true,
@@ -475,7 +494,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "when value is removed from animate, animates back to value currently defined in initial prop"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: ["opacity restores from 1 to the current initial value"],
         evidence: {
             gallery: true,
@@ -497,7 +516,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "when value is removed from both animate and initial, perform no animation"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the last x value remains visible",
             "the stopped animation object is not serialized into later gesture snapshots",
@@ -522,7 +541,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/render/html/utils/__tests__/build-styles.test.ts",
             "Builds transformOrigin with correct default value types"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "numeric originX/originY values resolve as percentages",
             "the first initial snapshot includes transformOrigin",
@@ -548,7 +567,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "Correctly animates complex value types on first rerender"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "both renderers start at 120deg",
             "an intermediate angle is observable",
@@ -574,7 +593,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "animate display none => block immediately switches to block"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "display switches to block before the opacity entrance completes",
             "opacity exposes an intermediate entrance frame",
@@ -600,7 +619,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "animate display block => none switches to none on animation end"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "display remains block during the opacity exit",
             "opacity exposes an intermediate exit frame",
@@ -626,7 +645,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "animate visibility hidden => visible immediately switches to visible"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "visibility switches to visible before opacity entrance completes",
             "opacity exposes an intermediate entrance frame",
@@ -652,7 +671,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "doesn't animate no-op values"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "equal opacity and transform targets do not remain active",
             "velocity and spring options do not force a no-op target to run",
@@ -678,7 +697,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "doesn't animate no-op keyframes"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "equal opacity and transform keyframe arrays do not remain active",
             "velocity and spring options do not force equal keyframes to run",
@@ -704,7 +723,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "does animate no-op values if velocity is non-zero and animation type is spring"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "a spring with non-zero velocity starts for an equal target",
             "the lifecycle remains active after two post-render frames",
@@ -730,7 +749,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "doesn't animate zIndex"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "zIndex applies its target value on the first observable frame",
             "a long transition does not cause numeric zIndex interpolation",
@@ -756,7 +775,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "doesn't error when provided unknown animation type"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "an unknown transition type does not throw a runtime error",
             "the declarative target remains mounted and visible",
@@ -781,7 +800,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "converts unseen zero unit types to number"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "borderRadius starts from a 0px style value",
             "the numeric target is normalized to the compatible pixel type",
@@ -807,7 +826,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "animates previously unseen CSS variables"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "typed --* keys build without an any cast in the Lynx consumer",
             "Web and Lynx-for-Web settle at --motion-color: #000 and consume it as a black background",
@@ -832,7 +851,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "Correctly applies final keyframe with repeatType loop and odd numbered repeat"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the loop runs two forward iterations when repeat is one",
             "repeatDelay does not alter the terminal keyframe",
@@ -858,7 +877,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/transition-keyframes.test.tsx",
             "keyframes as target"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "animation passes through a nonterminal keyframe",
             "animation settles at the final keyframe",
@@ -883,7 +902,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/animation/animate/__tests__/animate.test.tsx",
             "correctly hydrates keyframes null with current MotionValue"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first sampled frame continues from the current value instead of a default origin",
             "the animation settles at the final keyframe",
@@ -915,7 +934,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/transition-keyframes.test.tsx",
             "times works as expected"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first changed frame starts at or beyond the second keyframe",
             "the final pre-completion frame stays at or before the third keyframe",
@@ -947,7 +966,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/animation/__tests__/get-value-transition.test.ts",
             "falls back to default key"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the default delay overrides an immediate top-level transition",
             "the value remains at its start during the default delay",
@@ -979,7 +998,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "transition accepts manual from value"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the update restarts from the explicit from value instead of the current value",
             "early samples progress from the manual start towards the target",
@@ -1012,7 +1031,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "accepts base transition settings"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "opacity settles before the delayed x animation begins",
             "x remains at its start value inside its property-specific delay",
@@ -1044,7 +1063,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "uses transition on subsequent renders"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the initial transform remains stable before the update",
             "the first changed frame is already the final target",
@@ -1070,7 +1089,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-utils/src/easing/utils/__tests__/map.test.ts",
             "Maps easing to lookup"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the named curve lags a simultaneous linear tween during its first half",
             "both curves preserve the same start and final values",
@@ -1101,7 +1120,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "keyframes - accepts ease as an array"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first segment invokes its easing callback",
             "the second segment invokes its easing callback",
@@ -1127,7 +1146,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "applies custom transform"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the callback receives the latest transform values",
             "the callback receives Motion's generated transform string",
@@ -1157,7 +1176,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/value/__tests__/use-motion-value.test.tsx",
             "can be set manually"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the style starts at the MotionValue initial value",
             "a background MotionValue.set bridges to the main-thread value and updates transform directly",
@@ -1183,7 +1202,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Performs a keyframes animations when to is an array of strings"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the sequence starts red",
             "intermediate samples are green-dominant",
@@ -1209,7 +1228,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "Correctly animates from HSLA to RGB"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the animation starts from the HSLA color",
             "an intermediate sample is neither endpoint",
@@ -1243,7 +1262,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Correctly animates spring"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the spring passes beyond its target",
             "the spring returns and settles at the target",
@@ -1269,7 +1288,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Accepts delay"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the target remains at its initial value during the delay",
             "the target moves only after the delay elapses",
@@ -1295,7 +1314,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Accepts negative delay as elapsed"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first animated sample skips the nominal start",
             "the animation settles at its final value sooner than a full-duration tween",
@@ -1320,7 +1339,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Correctly samples with infinite repeat"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "animation remains live after its first duration",
             "later samples continue to change on both renderers",
@@ -1345,7 +1364,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Correctly applies repeat type 'reverse'"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first iteration reaches the target scale",
             "the reverse iteration returns toward the origin",
@@ -1371,7 +1390,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Correctly applies repeat type 'mirror'"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the outward first quarter remains near the start under easeIn",
             "the mirrored return first quarter remains near the outward endpoint",
@@ -1403,7 +1422,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/motion-dom/src/animation/__tests__/JSAnimation.test.ts",
             "Correctly applies repeatDelay"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first iteration reaches its endpoint",
             "the endpoint remains held throughout repeatDelay",
@@ -1434,7 +1453,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "animates to set variant"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "rest and active labels resolve to the expected local targets",
             "a changed string label uses the target-owned transition",
@@ -1465,7 +1484,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "variants work the same whether defined inline or not"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "inline and hoisted variant tables resolve the same array labels",
             "later labels override shared values from earlier labels",
@@ -1496,7 +1515,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "style is active once value has been removed from animate"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "a named variant temporarily owns opacity and rotate",
             "removing animate restores the current static style",
@@ -1523,7 +1542,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "style is used as fallback when a variant changes to not contain that style"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the first variant owns opacity",
             "the next variant animates x but omits opacity",
@@ -1549,7 +1568,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "FRAMER BUG: When a value is removed from an element as the result of a parent variant, fallback to style"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the child resolves inherited initial variant a to opacity 0.5",
             "parent variant b updates the child to opacity 1",
@@ -1575,7 +1594,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "new child items animate from initial to animate"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the second child is absent after the parent has reached visible",
             "a later render mounts the child inside a neutral Motion wrapper",
@@ -1601,7 +1620,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "Children correctly animate to removed values even when not rendering along with parents"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the inherited hidden variant begins at opacity 0 and x 0",
             "the inherited visible variant reaches opacity 1 and x 100",
@@ -1632,7 +1651,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "child inside Suspense boundary should animate from initial variant when parent is already animating"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the Suspense fallback is visible after the parent reaches its animate variant",
             "resolving the boundary mounts the inherited child",
@@ -1658,7 +1677,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "child inside Suspense boundary should not skip directly to animate variant values"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the Suspense fallback is visible while the parent is already animating",
             "resolving the boundary mounts a child with a ten-second inherited tween",
@@ -1684,7 +1703,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "Resets motion values to initial after Suspense remount"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the initial animation reaches an observable intermediate frame",
             "suspending the child displays the fallback",
@@ -1714,7 +1733,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/render/utils/__tests__/variants.test.ts",
             "Resolves function that returns object"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "each custom index resolves a distinct delay",
             "all resolved targets settle at the same visible state",
@@ -1744,7 +1763,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/gestures/__tests__/press.test.tsx",
             "press gesture variant applies and unapplies"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "Lynx touch and Web pointer holds apply the tap target",
             "platform press release restores the rest target",
@@ -1770,7 +1789,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/gestures/__tests__/hover.test.tsx",
             "whileHover applied as variant"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "pointer enter applies the named hover target",
             "hover callbacks report one entry",
@@ -1796,7 +1815,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/render/utils/__tests__/animation-state.test.ts",
             "Swap between value in target and transitionEnd, target"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "press applies the transitionEnd value",
             "gesture lifecycle reports the pressed definition",
@@ -1822,7 +1841,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/gestures/__tests__/press.test.tsx",
             "press gesture variant applies and unapplies"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "press start and completion report the pressed definition",
             "release start and completion report the restored definition",
@@ -1853,7 +1872,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "fires onAnimationStart when animation begins"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "start reports definition",
             "complete reports the same definition",
@@ -1879,7 +1898,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "unmount cancels active animations"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the target unmounts while its animation is still active",
             "completion remains at zero immediately after unmount",
@@ -1904,7 +1923,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "child onAnimationComplete triggers from parent animations"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the inherited child reports start:visible",
             "the inherited child reports complete:visible",
@@ -1932,7 +1951,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/animate-prop.test.tsx",
             "mount animation doesn't run if `initial={false}`"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "first frame is final animate state",
             "later target updates still animate",
@@ -1956,7 +1975,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/context/MotionContext/__tests__/utils.test.ts",
             "getCurrentTreeVariants preserves initial false for descendants"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the parent publishes initial false in variant context",
             "the inherited child renders its final animate keyframe on the first frame",
@@ -1986,7 +2005,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "child animates to set variant"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "a child inherits the parent's base animate label",
             "a reactive parent label update reaches the child",
@@ -2017,7 +2036,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "changing values within an inherited variant triggers an animation"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the child initially resolves the inherited variant to x=0",
             "the parent label remains unchanged while the child variants object changes",
@@ -2046,7 +2065,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "propagates through components with no `animate` prop"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the root publishes the visible label",
             "a neutral intermediate Motion component preserves the inherited context",
@@ -2072,7 +2091,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "initial: false correctly propagates"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the root publishes initial false with the visible animate label",
             "a neutral intermediate Motion component preserves both context values",
@@ -2098,7 +2117,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "initial=false doesn't propagate to props"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the parent owns initial=false for its inherited variant subtree",
             "the explicit object child keeps its own mount animation",
@@ -2125,7 +2144,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "delay propagates throughout children"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the root and intermediate descendant each contribute 60ms",
             "the deep child remains hidden inside the cumulative delay window",
@@ -2156,7 +2175,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "doesn't propagate to a component with its own `animate` prop"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the parent owns a one-second child delay",
             "the explicit child animate prop starts a new ownership root",
@@ -2187,7 +2206,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "nested controlled variants switch correctly"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the parent and child resolve their distinct hidden variants",
             "both explicit animate props react to the same state update",
@@ -2218,7 +2237,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "when: beforeChildren works correctly"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the child stays at its initial value during the longest parent value transition",
             "value-specific delay, duration, repeat, and repeatDelay determine the parent completion window",
@@ -2255,7 +2274,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/variant.test.tsx",
             "when: beforeChildren works correctly"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "afterChildren and automatic-duration beforeChildren honor aggregate completion",
             "dynamic delayChildren and staggerChildren order descendants",
@@ -2281,7 +2300,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/motion/__tests__/delay.test.tsx",
             "in variant children via delayChildren"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the inherited child remains at its initial target during the numeric delay",
             "the child settles at the inherited animate target after the delay",
@@ -2315,7 +2334,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/context/MotionContext/__tests__/utils.test.ts",
             "getCurrentTreeVariants returns no inherited labels when inherit is false"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "the boundary publishes no inherited initial label",
             "a descendant keeps its own static style instead of resolving the parent label",
@@ -2344,7 +2363,7 @@ export const CONFORMANCE_CASES: readonly ConformanceCase[] = [
             "packages/framer-motion/src/components/AnimatePresence/__tests__/AnimatePresence.test.tsx",
             "Suppresses initial animation if `initial={false}`"
         ),
-        baseline: "framer-motion@13.0.0",
+        baseline: WEB_BASELINE,
         assertions: [
             "exit target runs before removal",
             "presence completion releases the child",
@@ -4685,7 +4704,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         issue: 62,
         caseIds: ["targets/style-motion-value"],
         lossBefore: 15,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F4/M2/R3/C0 · #3458 supplies typed style MotionValues; immutable 72c4fe0 adds #3478's opt-in, one-way background set bridge · focused dual-renderer 5/5 and full suite 40/40 · x moves -36→36 while React render count stays 1 · synchronous get/subscription parity remains issue #62 · native Sandbox host cannot load the current bundle, so no exact-preview native claim.",
     },
     {
@@ -4697,7 +4716,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3479,
         caseIds: ["lifecycle/tap-animation"],
         lossBefore: 12,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F4/M2/R1/C0 · immutable e784419 full package set · press reports pressed lifecycle and release restores the active lower-priority definition across multi-property targets; package tests also cover the rest fallback and stale-completion suppression · ReactLynx snapshot excludes the circular active-animation edge while direct MotionValue animation access remains available.",
     },
     {
@@ -4757,7 +4776,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 38,
         caseIds: ["transitions/easing-function-array"],
         lossBefore: 23,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I3/F2/M5/R4/C0 · Web invokes both per-segment callbacks; Lynx invokes neither and silently settles · architecture blocker issue #37 · no Gallery claim.",
     },
     {
@@ -4974,7 +4993,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 59,
         caseIds: ["targets/css-custom-property"],
         lossBefore: 18,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I3/F2/M1/R4/C4 · immutable 9aff526 full package set · typed MotionStyle + upstream motion-dom setProperty · Web/Lynx-for-Web variable and consumed background pass 5/5 · Android static ReactLynx control and Motion target both compute transparent · issue #57 · tracked 39→40 and partial 0→1, so rounded loss rises 18→19 as native scope becomes explicit.",
     },
     {
@@ -4990,7 +5009,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
             "lifecycle/base-animate",
         ],
         lossBefore: WEIGHTED_LOSS,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "immutable 9aff526 · CSS custom property focused case passes, but the full headless suite is 33/37: both no-op statuses and declarative onAnimationComplete remain active/missing on Lynx-for-Web · previous bd151a1 suite was 36/36 · issue #58 · metrics stay unchanged until the regression is fixed and revalidated.",
     },
     {
@@ -5008,7 +5027,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
             "lifecycle/base-animate",
         ],
         lossBefore: WEIGHTED_LOSS,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F4/M1/R1/C0 · immutable 48fc271 full package set · restores declarative onAnimationComplete while the existing main-thread generation guard still suppresses completion after unmount · focused lifecycle/no-op/unmount 5/5 · full dual-renderer suite 38/38 (from 33/37) · rounded loss remains 19 because this repairs accepted coverage rather than adding an API claim · native Sandbox blocker: Playground SDK 0.0.1 cannot decode the current Rspeedy bundle and Explorer does not implement App.openPage.",
     },
     {
@@ -5021,7 +5040,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 61,
         caseIds: ["initial/false"],
         lossBefore: 19,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R0/C0 · #3457 is already an ancestor of immutable full-stack 48fc271 · package 119/119 · first frame renders the final keyframe with zero mount starts, then a later update animates once in both renderers · native Sandbox host cannot load the current bundle, so no exact-preview native claim.",
     },
     {
@@ -5141,7 +5160,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
             "targets/complex-gradient",
         ],
         lossBefore: 10,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "Validation-only draft publishes exact motion/react/react-umd packages at d4d34c7 because feature-base PRs do not trigger pkg.pr.new · full Hux evidence build and headless Web/Lynx suite pass 47/47 · complex gradient I4/F4/M1/R0/C2 was already supported and adds source-linked evidence without a Lynx source patch · no Full Demo or native claim.",
     },
     {
@@ -5153,7 +5172,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3492,
         caseIds: ["variants/propagation"],
         lossBefore: 10,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F4/M1/R1/C0 · immutable e17bcaf motion/react/react-umd set · parent initial/animate labels propagate reactively while explicit child animate wins · package 144/144 and complete dual-renderer suite 48/48 · orchestration, controls, and gesture propagation remain scoped to issue #10 · no Full Demo or native claim.",
     },
     {
@@ -5165,7 +5184,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3493,
         caseIds: ["variants/delay-children"],
         lossBefore: 10,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F4/M1/R2/C0 · immutable b9850fc motion/react/react-umd set · numeric delayChildren holds and then settles inherited child targets while explicit child animate resets ownership · package 147/147 and complete dual-renderer suite 49/49 · synthetic Web press retries preserve the unchanged transitionEnd assertion after an isolated 3/3 diagnosis · dynamic delay, stagger, when, controls, and gesture propagation remain scoped to issue #10 · no Full Demo or native claim.",
     },
     {
@@ -5177,7 +5196,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3494,
         caseIds: ["variants/inherit-opt-out"],
         lossBefore: 10,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable c394dd3 motion/react/react-umd set · inherit={false} publishes an empty variant context so an inherited initial label stops at the boundary · package 148/148 and complete dual-renderer suite 50/50 · parent-driven dynamic orchestration remains scoped to issue #10 · no Full Demo or native claim.",
     },
     {
@@ -5189,7 +5208,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3495,
         caseIds: ["initial/false-propagation"],
         lossBefore: 10,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · parent initial={false} reaches inherited variant children so their first frame is the final animate keyframe · package 149/149 and complete dual-renderer suite 51/51 · no Full Demo or native claim.",
     },
     {
@@ -5201,7 +5220,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 72,
         caseIds: ["lifecycle/inherited-variant-child"],
         lossBefore: 9,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · existing runtime reports the inherited visible definition at child start and completion with no lynx-stack source diff · complete dual-renderer suite 52/52 · loss stays 9 after expanding the measured surface · no Full Demo or native claim.",
     },
     {
@@ -5213,7 +5232,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 73,
         caseIds: ["variants/inherited-value-update"],
         lossBefore: 9,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · existing runtime re-resolves a child's inherited variant when its target values change while the parent label stays constant, with no lynx-stack source diff · complete dual-renderer suite 53/53 · no Full Demo or native claim.",
     },
     {
@@ -5225,7 +5244,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 74,
         caseIds: ["variants/deep-propagation"],
         lossBefore: 9,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · existing runtime preserves inherited labels through a neutral intermediate Motion component with no lynx-stack source diff · complete dual-renderer suite 54/54 · no Full Demo or native claim.",
     },
     {
@@ -5237,7 +5256,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 75,
         caseIds: ["initial/deep-false-propagation"],
         lossBefore: 9,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · existing runtime preserves inherited initial=false through a neutral intermediate Motion component with no lynx-stack source diff · complete dual-renderer suite 55/55 · no Full Demo or native claim.",
     },
     {
@@ -5249,7 +5268,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 76,
         caseIds: ["variants/deep-delay-children"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R2/C0 · immutable f6b0e90 motion/react/react-umd set · two 60ms numeric delayChildren values accumulate through inherited descendants, hold the deep child at 80ms, then settle, with no lynx-stack source diff · complete dual-renderer suite 56/56 · dynamic delay, stagger, when, controls, and gesture propagation remain issue #10 · no Full Demo or native claim.",
     },
     {
@@ -5261,7 +5280,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 77,
         caseIds: ["variants/explicit-child-delay-root"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · a child with explicit animate settles within 500ms despite a one-second parent delayChildren window, establishing a new ownership root with no lynx-stack source diff · complete dual-renderer suite 57/57 · no Full Demo or native claim.",
     },
     {
@@ -5273,7 +5292,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 78,
         caseIds: ["variants/nested-controlled-roots"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable f6b0e90 motion/react/react-umd set · nested parent and child explicit animate roots independently resolve and reactively switch their distinct named variants with no lynx-stack source diff · complete dual-renderer suite 58/58 · no Full Demo or native claim.",
     },
     {
@@ -5285,7 +5304,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3496,
         caseIds: ["initial/false-explicit-child"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable dfb913f motion/react/react-umd set · inherited initial=false now applies only when the child also inherits the parent animate label, preserving explicit object child mount lifecycle · package declarative suite 41/41, build and Publint pass, focused dual-renderer 3/3, and complete suite 59/59 · no Full Demo or native claim.",
     },
     {
@@ -5297,7 +5316,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 80,
         caseIds: ["variants/array-definition-parity"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R0/C0 · immutable dfb913f motion/react/react-umd set · existing runtime merges array labels left to right and keeps inline and hoisted variant tables equivalent with no lynx-stack source diff · complete dual-renderer suite 60/60 · no Full Demo or native claim.",
     },
     {
@@ -5309,7 +5328,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3497,
         caseIds: ["initial/variant-transition-end"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I3/F5/M1/R1/C0 · immutable 2c805a2 motion/react/react-umd set · an initial named variant now composes transitionEnd over its ordinary target on the first frame · package declarative suite 42/42, focused dual-renderer 1/1, and complete suite 61/61 · no Full Demo or native claim.",
     },
     {
@@ -5322,7 +5341,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 82,
         caseIds: ["transitions/property-specific-routing"],
         lossBefore: 8,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R0/C0 · immutable 2c805a2 motion/react/react-umd set · opacity settles while x remains inside its own delay, then both reach their targets · package coverage plus complete dual-renderer suite 62/62 · no Full Demo or native claim.",
     },
     {
@@ -5334,7 +5353,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 83,
         caseIds: ["targets/display-exit"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R0/C1 · immutable 2c805a2 motion/react/react-umd set · display remains block through the opacity exit and switches to none only after completion · package coverage plus complete dual-renderer suite 63/63 · no Full Demo or native claim.",
     },
     {
@@ -5347,7 +5366,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 84,
         caseIds: ["variants/style-fallback-after-removal"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable 2c805a2 motion/react/react-umd set · removing a named variant restores static opacity/rotate ownership, later style updates remain reactive, and re-entering the variant masks style changes while active · adjacent package coverage protects object-target removal; exact proof is the complete dual-renderer suite 64/64 · no Full Demo or native claim.",
     },
     {
@@ -5360,7 +5379,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 85,
         caseIds: ["variants/style-fallback-when-next-omits-key"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable 2c805a2 motion/react/react-umd set · switching from an opacity variant to an x-only variant restores opacity from static style while applying x · adjacent object-target package coverage protects removed-key ownership; exact proof is the complete dual-renderer suite 65/65 · no Full Demo or native claim.",
     },
     {
@@ -5373,7 +5392,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 86,
         caseIds: ["variants/instant-transition-end-race"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable 2c805a2 motion/react/react-umd set · on first proves its display:flex transitionEnd can apply, off restores display:none, then a same-turn on→off switch remains none after deferred completion work · adjacent package coverage protects latest/stale object-target generations; exact named-variant proof is the complete dual-renderer suite 66/66 · no Full Demo or native claim.",
     },
     {
@@ -5386,7 +5405,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 87,
         caseIds: ["variants/transition-end-on-completion"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C1 · immutable 2c805a2 motion/react/react-umd set · Web and Lynx remain display:block at the 120ms intermediate blue→red frame, then settle red and apply display:none only after completion · package coverage plus complete dual-renderer suite 67/67 · no Full Demo or native claim.",
     },
     {
@@ -5399,7 +5418,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 88,
         caseIds: ["variants/inherited-style-fallback-after-removal"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F4/M1/R2/C0 · immutable cd567e7 motion/react/react-umd set · before: inherited a→b→c({}) left Lynx at initial opacity 0.5 while Web restored child style opacity 0; after: inherited ownership uses static style only for removed-key fallback while preserving initial values as animation starts · package declarative 43/43, package full 152/152, focused dual-renderer 1/1, and complete suite 68/68 · no Full Demo or native claim.",
     },
     {
@@ -5412,7 +5431,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 89,
         caseIds: ["variants/dynamic-inherited-child"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · immutable cd567e7 motion/react/react-umd set · after the parent settles at visible, a newly mounted child under a neutral Motion wrapper resolves inherited hidden and reaches opacity 1 / x 100 in both renderers · focused dual-renderer 1/1 and complete suite 69/69 · Android Sandbox Playground SDK 0.0.1 created the target session but could not decode the current Rspeedy bundle, so native remains unclaimed · no Full Demo because entry-only insertion does not yet include presence-driven exit.",
     },
     {
@@ -5425,7 +5444,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 90,
         caseIds: ["variants/memoized-inherited-removed-value"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R2/C0 · immutable ed0c9f2 motion/react/react-umd set with matching x-commit-key · before: hidden→visible→hidden left Lynx x at 100 while Web restored x 0; after: inherited removed transforms restore Motion identity without rerendering the memoized child · package declarative 44/44, package full 153/153, focused dual-renderer 1/1, and complete suite 70/70 · native remains unclaimed because the current Rspeedy bundle cannot be decoded by Sandbox Playground SDK 0.0.1 · no Full Demo because this closes ownership semantics rather than a new end-to-end usage pattern.",
     },
     {
@@ -5437,7 +5456,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 91,
         caseIds: ["variants/suspense-inherited-child"],
         lossBefore: 7,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable ed0c9f2 motion/react/react-umd set · a real Suspense boundary first renders fallback, then its asynchronously resolved child reports an inherited animation start and settles at visible opacity 1 in Web and ReactLynx · focused dual-renderer 1/1 and complete suite 71/71 · Sandbox lease endpoint returned no serial and timed out on the bounded retry, so native is unavailable and unclaimed · no Full Demo because this records an already-supported lazy-entry composition rather than newly unblocking a broader pattern.",
     },
     {
@@ -5449,7 +5468,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 92,
         caseIds: ["variants/suspense-initial-frame"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable ed0c9f2 motion/react/react-umd set · after a real Suspense boundary resolves beneath an already-animated parent, both renderers sample the child's ten-second inherited tween below opacity 0.5 rather than skipping to visible opacity 1 · focused dual-renderer 1/1 and complete suite 72/72 · native remains unavailable and unclaimed after the immediately preceding bounded Sandbox lease timeout · no Full Demo because this strengthens lazy-entry semantics rather than unlocking a broader usage pattern.",
     },
     {
@@ -5461,7 +5480,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 94,
         caseIds: ["targets/suspense-remount-reset"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R2/C0 · immutable ed0c9f2 motion/react/react-umd set · a child suspended during a four-second opacity/scale tween renders fallback, then both renderers restart below 0.15 after resolution instead of retaining the pre-suspend intermediate frame · focused dual-renderer 1/1 and complete suite 73/73 · the Sandbox lease endpoint timed out after 30 seconds without returning a serial, so native is unavailable and unclaimed · no Full Demo because this closes lifecycle evidence without newly unlocking a broader usage pattern.",
     },
     {
@@ -5474,7 +5493,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 95,
         caseIds: ["variants/before-children"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F4/M1/R2/C0 · immutable 51d11ee motion/react/react-umd set with matching x-commit-key · before ed0c9f2: Web held the inherited child at opacity 0.1 while Lynx jumped to 1 inside the parent window; after: both hold through 200ms and settle only after the 600ms parent duration · package declarative 48/48, package full 157/157, build/Publint pass, focused dual-renderer 1/1, and complete suite 74/74 · Android Explorer loaded the exact bundle and exposed initial child opacity 0.1, but its SDK 0.0.1 event path left the parent at translateX(0px) after both DevTool tap and scaled ADB touch, so native timing remains unclaimed · weighted loss remains 6 because automatic/repeating duration, afterChildren, stagger, controls, and gesture propagation remain blocked in issue #10 · no Full Demo until the remaining orchestration family supports a broader production pattern.",
     },
     {
@@ -5487,7 +5506,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 96,
         caseIds: ["variants/before-children"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F4/M1/R2/C0 · immutable 36e144e motion/react/react-umd set with matching x-commit-key · the parent routes opacity to 100ms and x to 200ms delay + 600ms duration; old 51d11ee failed the same headless assertion because Lynx child opacity was already 1 at 400ms, while 36e144e holds 0.1 and settles only after the longest 800ms value window · package declarative 50/50, package full 159/159, commit hooks and build/declarations/Publint pass · focused dual-renderer 1/1 and complete suite 74/74 · native timing remains unclaimed under the same SDK 0.0.1 event-dispatch boundary recorded by #95 · weighted loss remains 6 because automatic/repeating completion, afterChildren, stagger, controls, and gesture propagation remain blocked in issue #10 · no Full Demo because this widens the same orchestration slice rather than unlocking the full production pattern.",
     },
     {
@@ -5500,7 +5519,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 98,
         caseIds: ["initial/false-propagation"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F5/M1/R1/C0 · test-only lynx-stack PR #3508 locks an already-supported upstream composition: initial=false suppresses the inherited child's mount animation even when the parent declares a ten-second beforeChildren window · immutable 013e20e consumer scene renders the child immediately at opacity 1 / x 24 in both renderers instead of waiting for the parent · package declarative 52/52 and full 161/161; focused and complete consumer evidence are recorded by motion PR #98 · no capability count, loss, native, or Full Demo claim moves because this is regression evidence for an existing contract.",
     },
     {
@@ -5513,7 +5532,7 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         motionPr: 97,
         caseIds: ["variants/before-children"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I5/F4/M1/R2/C0 · immutable 013e20e motion/react/react-umd set with matching x-commit-key · the longest parent value uses 100ms delay + two 200ms iterations + one 200ms repeatDelay; old 36e144e fails the same focused assertion because Lynx child opacity is already 1 at 400ms, while 013e20e holds 0.1 and settles after the finite 700ms window · package declarative 51/51, package full 160/160, commit hooks and build/declarations/Publint pass · focused dual-renderer 1/1 and complete suite 74/74 · native timing remains unclaimed under the SDK 0.0.1 event-dispatch boundary recorded by #95 · Infinity, automatic completion, afterChildren, stagger, controls, and gesture propagation remain in issue #10, so weighted loss stays 6 and no Full Demo is claimed.",
     },
     {
@@ -5525,7 +5544,19 @@ export const CONVERGENCE_HISTORY: readonly ConvergenceRecord[] = [
         lynxStackPr: 3463,
         caseIds: ["lifecycle/unmount-cancel"],
         lossBefore: 6,
-        lossAfter: WEIGHTED_LOSS,
+        lossAfter: 6,
         note: "I4/F5/M1/R1/C0 · immutable 013e20e motion/react/react-umd set includes #3463 · both renderers unmount during the two-second animation and remain at complete:0 after waiting beyond its original duration · package regression and complete dual-renderer suite lock generation invalidation across the lifecycle bridge · no native or Full Demo claim because this promotes existing cleanup evidence rather than adding a broader usage pattern.",
+    },
+    {
+        id: "rebase-motion-13-4-lynx-main",
+        date: "2026-09-29",
+        title: "Rebase onto Motion 13.4.5 and lynx-stack main",
+        kind: "architecture",
+        status: "verified",
+        motionPr: 0,
+        caseIds: [],
+        lossBefore: 6,
+        lossAfter: 6,
+        note: "Harness rebased onto motiondivision/motion v13.4.6 (351 upstream commits); Web baseline and source provenance move from framer-motion 13.0.0 / motion 12.40.0 to 13.4.5, with all 76 tracked upstream test files present at v13.4.5 · lynx-stack main 4f63dfd now carries the MainThreadObject runtime (#3788/#3789/#4064), so the 013e20e declarative Motion implementation is ported onto it (defineMainThreadObjectType + downcast, background MotionValue.set forwarded through runOnMainThread) and vendored as an exact package set · package 160/160, complete dual-renderer suite 75/75 and portal suite 8/8 on Rspeedy 0.18 / Rsbuild 2 · no case status changes, so loss stays 6.",
     },
 ]

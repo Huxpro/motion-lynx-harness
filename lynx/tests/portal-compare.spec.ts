@@ -171,7 +171,7 @@ test("gallery info panels identify each runtime without shifting layout", async 
 
     await webToggle.click()
     await expect(frames.first().locator("#gallery-info-panel")).toContainText(
-        "framer-motion@13.0.0"
+        "framer-motion@13.4.5"
     )
     // Identity is per-pane: the Lynx panel stays closed.
     await expect(frames.nth(1).locator("#gallery-info-panel")).toHaveCount(0)

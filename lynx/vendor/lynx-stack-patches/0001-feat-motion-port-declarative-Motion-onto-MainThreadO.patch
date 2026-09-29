@@ -1,0 +1,4167 @@
+From 162e563155dd3cbcf58726e80ac3568acae12922 Mon Sep 17 00:00:00 2001
+From: "xuan.huang" <5563315+Huxpro@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 11:33:47 +0000
+Subject: [PATCH] feat(motion): port declarative Motion onto MainThreadObject
+ main
+
+Carries the declarative component, variant, gesture and lifecycle
+implementation validated at 013e20e onto the MainThreadObject runtime that
+landed in #3788/#3789: MotionValue handles use downcast()/creationPayload,
+the factory is a capture-free main-thread function, and background set()
+is forwarded through runOnMainThread.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .changeset/motion-declarative-on-main.md      |    5 +
+ packages/motion/README.md                     |   98 +-
+ .../motion/__tests__/declarative.test.tsx     | 1618 +++++++++++++++++
+ packages/motion/__tests__/element.test.tsx    |   30 +-
+ packages/motion/__tests__/hooks.test.tsx      |   72 +-
+ packages/motion/__tests__/index.test.ts       |    3 +
+ packages/motion/package.json                  |    2 +
+ .../src/declarative/mainThreadDependencies.ts |    8 +
+ packages/motion/src/declarative/motion.tsx    | 1528 ++++++++++++++++
+ packages/motion/src/declarative/style.ts      |  273 +++
+ packages/motion/src/declarative/types.ts      |  122 ++
+ packages/motion/src/hooks/useMotionValue.ts   |   79 +
+ packages/motion/src/index.ts                  |   17 +
+ packages/motion/src/polyfill/element.ts       |   36 +-
+ 14 files changed, 3873 insertions(+), 18 deletions(-)
+ create mode 100644 .changeset/motion-declarative-on-main.md
+ create mode 100644 packages/motion/__tests__/declarative.test.tsx
+ create mode 100644 packages/motion/src/declarative/mainThreadDependencies.ts
+ create mode 100644 packages/motion/src/declarative/motion.tsx
+ create mode 100644 packages/motion/src/declarative/style.ts
+ create mode 100644 packages/motion/src/declarative/types.ts
+ create mode 100644 packages/motion/src/hooks/useMotionValue.ts
+
+diff --git a/.changeset/motion-declarative-on-main.md b/.changeset/motion-declarative-on-main.md
+new file mode 100644
+index 000000000..94493b4a7
+--- /dev/null
++++ b/.changeset/motion-declarative-on-main.md
+@@ -0,0 +1,5 @@
++---
++"@lynx-js/motion": patch
++---
++
++Add declarative `motion.*` components and `useMotionValue` on top of the `MainThreadObject` runtime. `MotionValue.set()` may be called from the background runtime and is forwarded to the main-thread value.
+diff --git a/packages/motion/README.md b/packages/motion/README.md
+index 41b849136..f798f62d0 100644
+--- a/packages/motion/README.md
++++ b/packages/motion/README.md
+@@ -1,6 +1,9 @@
+ # @lynx-js/motion
+ 
+-A powerful animation library for Lynx, ported from [Motion for React (framer-motion)](https://motion.dev/). It brings imperative animations, motion values to the Lynx ecosystem.
++A Motion animation-engine adapter for Lynx with imperative APIs and an
++incremental declarative component layer. It reuses upstream
++[`motion`](https://motion.dev/) and `motion-dom` primitives, but it is not a
++complete `motion/react` renderer.
+ 
+ ## Installation
+ 
+@@ -10,6 +13,72 @@ npm install @lynx-js/motion
+ 
+ ## Usage
+ 
++### Declarative animation
++
++Use the built-in Motion components to animate Lynx elements from props. Motion
++applies `initial` during the first render and animates whenever `animate`
++changes.
++
++```tsx
++import { motion, useMotionValue } from '@lynx-js/motion';
++
++export function Card({ selected }: { selected: boolean }) {
++  const scale = useMotionValue(1);
++
++  return (
++    <motion.view
++      initial={{ opacity: 0, x: -20 }}
++      animate={{ opacity: 1, x: selected ? 100 : 0 }}
++      transition={{ type: 'spring', stiffness: 200, damping: 20 }}
++      style={{ scale }}
++    />
++  );
++}
++```
++
++`motion.view`, `motion.text`, and `motion.image` are included. Use
++`motion.create(Component)` for components that forward `style`, host props, and
++`main-thread:ref` to a Lynx element.
++
++#### Declarative compatibility
++
++The declarative layer currently supports:
++
++- object targets and string/array/function `variants` for `initial` and
++  `animate`, including `custom`, target-local `transition`, and parent label
++  inheritance for base targets when a child does not define its own label;
++  `inherit={false}` prevents labels propagating through a variant boundary;
++  parent `initial={false}` also suppresses inherited child mount animations;
++  numeric `delayChildren` also propagates through inherited labels;
++  `when: "beforeChildren"` waits for a parent's finite target whose animated
++  values all have explicit durations
++  before starting inherited children
++- `initial={false}` to render the final `animate` keyframe without a mount
++  animation while preserving later target updates
++- transform aliases, keyframes, repeat/reverse, colors, and live `MotionValue`
++  styles backed by the upstream Motion engine
++- `whileTap` with `onTapStart`, `onTap`, and `onTapCancel`
++- `whileHover` with `onHoverStart` and `onHoverEnd` on mouse-capable clients
++- target-local `transitionEnd` for base, tap, and hover animations
++- `onAnimationStart` and `onAnimationComplete` for base `animate`, `whileTap`,
++  and `whileHover` targets and their restorations
++
++It does **not** yet provide the complete `motion/react` declarative contract.
++In particular, focus/in-view/drag states and their animation lifecycle
++callbacks, animation controls, gesture propagation and remaining variant
++orchestration (`when: "afterChildren"`, automatic-duration or infinite
++`when: "beforeChildren"`, dynamic `delayChildren`, and `staggerChildren`),
++layout and shared-layout animations, `exit`, and `AnimatePresence` are not
++supported.
++Internal main-thread refs, handlers, and gestures also cannot yet be safely
++composed with every consumer-owned equivalent.
++
++This boundary is architectural: the animation generators, MotionValues,
++transitions, interpolation, and style effects come from upstream Motion. The
++React DOM visual-element tree, DOM gesture/layout observers, presence tree, and
++React-specific orchestration cannot run unchanged on ReactLynx and require Lynx
++host/runtime integrations.
++
+ ### Basic Animation
+ 
+ Currently, `@lynx-js/motion` supports imperative animations using the `animate` function on the main thread.
+@@ -44,6 +113,27 @@ export function MyComponent() {
+ }
+ ```
+ 
++### Motion values
++
++`useMotionValue` creates an opaque background-thread handle that becomes a real
++Motion `MotionValue` when captured by a main-thread function. Its methods must
++only be called from the main thread.
++
++```tsx
++import { useMotionValue } from '@lynx-js/motion';
++
++export function Counter() {
++  const count = useMotionValue(0);
++
++  function increment() {
++    'main thread';
++    count.set(count.get() + 1);
++  }
++
++  return <view main-thread:bindtap={increment} />;
++}
++```
++
+ For more comprehensive examples, please refer to the [examples/motion](https://github.com/lynx-family/lynx-stack/tree/main/examples/motion) directory in this repository.
+ 
+ ## Motion Mini (`@lynx-js/motion/mini`)
+@@ -68,10 +158,12 @@ import { animate, createMotionValue } from '@lynx-js/motion/mini';
+ | :-------------------- | :------------------------------------------------ | :------------------------ |
+ | **Animation Targets** | Numbers, Strings (colors, units), Objects, Arrays | **Numbers only** (mostly) |
+ | **Keyframes**         | Full support                                      | Limited support           |
++| **Layout Animations** | Supported                                         | Not supported             |
++| **Gesture Handlers**  | Declarative tap + hover subset                    | Not included              |
+ 
+ > **Note**: `MotionValue` in Mini primarily works with numbers.
+ 
+-### API Reference for Mini
++### CLI Reference for Mini
+ 
+ #### `createMotionValue<T>(initial: T)`
+ 
+@@ -84,7 +176,7 @@ mv.set(100);
+ 
+ #### `animate(value, target, options)`
+ 
+-Animates a `MotionValue`, a starting number, or a setter callback `(v: number) => void` to a numeric `target`.
++Animates a `MotionValue` or number.
+ 
+ ```typescript
+ animate(mv, 100, {
+diff --git a/packages/motion/__tests__/declarative.test.tsx b/packages/motion/__tests__/declarative.test.tsx
+new file mode 100644
+index 000000000..006c6a3cc
+--- /dev/null
++++ b/packages/motion/__tests__/declarative.test.tsx
+@@ -0,0 +1,1618 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import { beforeEach, describe, expect, test, vi } from 'vitest';
++
++import { memo, useState } from '@lynx-js/react';
++import type { IntrinsicElements } from '@lynx-js/types';
++import { act, fireEvent, render } from '@lynx-js/react/testing-library';
++
++import { motion, useMotionValue } from '../src/index.js';
++import type { MotionStyle, MotionTarget } from '../src/declarative/types.js';
++import { ElementCompt } from '../src/polyfill/element.js';
++import {
++  collectMotionValues,
++  resolveInitialStyle,
++  resolveMotionDefinition,
++  splitMotionTarget,
++} from '../src/declarative/style.js';
++
++describe('declarative Motion', () => {
++  beforeEach(() => {
++    globalThis.SystemInfo = { platform: 'web' } as typeof SystemInfo;
++    globalThis.NodeList ??= class NodeList {} as typeof NodeList;
++    globalThis.SVGElement ??= class SVGElement {} as typeof SVGElement;
++    globalThis.Element = ElementCompt as unknown as typeof Element;
++    globalThis.HTMLElement = ElementCompt as unknown as typeof HTMLElement;
++    globalThis.EventTarget = ElementCompt as unknown as typeof EventTarget;
++    const getComputedStyle = (element: Element): CSSStyleDeclaration =>
++      element instanceof ElementCompt
++        ? element.getComputedStyle() as unknown as CSSStyleDeclaration
++        : (element as HTMLElement).style;
++    globalThis.getComputedStyle = getComputedStyle;
++    globalThis.window.getComputedStyle = getComputedStyle;
++  });
++
++  test('resolves initial styles and transform aliases', () => {
++    expect(
++      resolveInitialStyle(
++        { width: '100px', x: 4 },
++        { opacity: 0, x: -20, scale: 0.5 },
++      ),
++    ).toEqual({
++      width: '100px',
++      opacity: 0,
++      transform: 'translateX(-20px) scale(0.5)',
++    });
++  });
++
++  test('resolves initial transform origin aliases with upstream defaults', () => {
++    expect(
++      resolveInitialStyle(
++        undefined,
++        { originX: 0.2, originY: '60%', originZ: 10 },
++      ),
++    ).toEqual({
++      transformOrigin: '20% 60% 10px',
++    });
++    expect(resolveInitialStyle(undefined, { originX: 0 })).toEqual({
++      transformOrigin: '0% 50% 0',
++    });
++  });
++
++  test('uses the final animate state when initial is false', () => {
++    expect(
++      resolveInitialStyle(
++        { width: '100px' },
++        false,
++        { opacity: [0, 1], x: [0, 24] },
++      ),
++    ).toEqual({
++      width: '100px',
++      opacity: 1,
++      transform: 'translateX(24px)',
++    });
++  });
++
++  test('preserves typed CSS custom properties in initial styles', () => {
++    const style: MotionStyle = { '--motion-color': '#fff' };
++    const target: MotionTarget = { '--motion-color': '#000' };
++
++    expect(resolveInitialStyle(style, target)).toEqual({
++      '--motion-color': '#000',
++    });
++  });
++
++  test('uses a MotionValue handle initial value in the first style', () => {
++    let scale: ReturnType<typeof useMotionValue> | undefined;
++    let initialStyle: ReturnType<typeof resolveInitialStyle>;
++    let motionValues: ReturnType<typeof collectMotionValues>;
++    function App() {
++      scale = useMotionValue(1.25);
++      initialStyle = resolveInitialStyle({ scale } as never, undefined);
++      motionValues = collectMotionValues({ scale } as never);
++      return <view />;
++    }
++
++    render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    expect(initialStyle).toEqual({
++      transform: 'scale(1.25)',
++    });
++    expect(motionValues).toBeDefined();
++    expect(motionValues?.['scale']).toBe(scale);
++  });
++
++  test('resolves named and function variants with target transitions', () => {
++    const definition = resolveMotionDefinition(
++      ['base', 'active'],
++      {
++        base: { opacity: 0.5, x: 0 },
++        active: custom => ({
++          x: Number(custom),
++          transition: { duration: 0.2 },
++        }),
++      },
++      80,
++    );
++
++    expect(splitMotionTarget(definition, { duration: 1 })).toEqual({
++      target: { opacity: 0.5, x: 80 },
++      transition: { duration: 0.2 },
++      transitionEnd: undefined,
++    });
++  });
++
++  test('propagates a parent variant label to children', async () => {
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view animate={active ? 'visible' : 'hidden'}>
++            <motion.view
++              data-testid='child'
++              variants={{
++                hidden: { opacity: 0, x: -20 },
++                visible: { opacity: 1, x: 40 },
++              }}
++              transition={{ type: false }}
++            />
++          </motion.view>
++          <view data-testid='toggle' bindtap={() => setActive(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 100));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'translateX(-20px)',
++    );
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'translateX(40px)',
++    );
++  });
++
++  test('restores child style when an inherited variant removes a value', async () => {
++    function App() {
++      const [phase, setPhase] = useState(0);
++      const label = phase === 0 ? 'a' : phase === 1 ? 'b' : 'c';
++      return (
++        <view>
++          <motion.view initial='a' animate={label}>
++            <motion.view
++              data-testid='child'
++              style={{ opacity: 0 }}
++              variants={{
++                a: { opacity: 0.5 },
++                b: { opacity: 1 },
++                c: {},
++              }}
++              transition={{ type: false }}
++            />
++          </motion.view>
++          <view
++            data-testid='toggle'
++            bindtap={() => setPhase(value => value + 1)}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'opacity: 0.5',
++    );
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++  });
++
++  test('restores an inherited value when a memoized child does not render with its parent', async () => {
++    const Child = memo(() => (
++      <motion.view
++        data-testid='child'
++        variants={{
++          visible: { x: 100, opacity: 1 },
++          hidden: { opacity: 0 },
++        }}
++        transition={{ type: false }}
++      />
++    ));
++
++    function App() {
++      const [visible, setVisible] = useState(false);
++      return (
++        <view>
++          <motion.view
++            initial={{ x: 0 }}
++            animate={visible ? 'visible' : 'hidden'}
++          >
++            <Child />
++          </motion.view>
++          <view
++            data-testid='toggle'
++            bindtap={() => setVisible(value => !value)}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'translateX(100px)',
++    );
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++    expect(getByTestId('child').getAttribute('style')).not.toContain(
++      'translateX(100px)',
++    );
++  });
++
++  test('an explicit child animate prop overrides a propagated label', async () => {
++    const { getByTestId } = render(
++      <motion.view animate='visible'>
++        <motion.view
++          data-testid='child'
++          animate='hidden'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++  });
++
++  test('inherit false prevents parent variant labels reaching descendants', async () => {
++    const { getByTestId } = render(
++      <motion.view initial='hidden'>
++        <motion.view inherit={false} variants={{}}>
++          <motion.view
++            data-testid='child'
++            style={{ opacity: 0.5, x: 10 }}
++            variants={{ hidden: { opacity: 0, x: -20 } }}
++            transition={{ type: false }}
++          />
++        </motion.view>
++      </motion.view>,
++      {
++        enableMainThread: true,
++        enableBackgroundThread: true,
++      },
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'opacity: 0.5',
++    );
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'translateX(10px)',
++    );
++  });
++
++  test('propagates initial false to an inherited variant child', async () => {
++    const { getByTestId } = render(
++      <motion.view initial={false} animate='visible'>
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0, x: -20 },
++            visible: { opacity: 1, x: 40 },
++          }}
++          transition={{ duration: 0.2 }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'translateX(40px)',
++    );
++  });
++
++  test('does not propagate initial false to an explicit child animate prop', async () => {
++    const onAnimationStart = vi.fn();
++    const { getByTestId } = render(
++      <motion.view initial={false} animate='visible'>
++        <motion.view
++          data-testid='child'
++          style={{ opacity: 1 }}
++          animate={{ opacity: 0.4 }}
++          transition={{ duration: 0.01 }}
++          onAnimationStart={onAnimationStart}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'opacity: 0.4',
++    );
++    expect(onAnimationStart).toHaveBeenCalledOnce();
++  });
++
++  test('propagates numeric delayChildren to a variant child', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: {},
++          visible: { transition: { delayChildren: 0.08 } },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 90));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('accumulates numeric delayChildren through variant descendants', async () => {
++    const delayedVariant = {
++      hidden: {},
++      visible: { transition: { delayChildren: 0.06 } },
++    };
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={delayedVariant}
++      >
++        <motion.view variants={delayedVariant}>
++          <motion.view
++            data-testid='child'
++            variants={{
++              hidden: { opacity: 0 },
++              visible: { opacity: 1 },
++            }}
++            transition={{ type: false }}
++          />
++        </motion.view>
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('finishes a parent variant before starting children', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: { x: 0 },
++          visible: {
++            x: 100,
++            transition: { duration: 0.1, when: 'beforeChildren' },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ duration: 0.01 }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 40));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 100));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('keeps an inherited child at its style value while beforeChildren runs', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          visible: {
++            opacity: 1,
++            transition: { duration: 1, when: 'beforeChildren' },
++          },
++        }}
++      >
++        <motion.view>
++          <motion.view
++            data-testid='child'
++            style={{ opacity: 0.1 }}
++            variants={{
++              visible: { opacity: 1 },
++            }}
++          />
++        </motion.view>
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 200));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain(
++      'opacity: 0.1',
++    );
++  });
++
++  test('waits for the longest explicit value transition before children', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: { opacity: 0, x: 0 },
++          visible: {
++            opacity: 1,
++            x: 100,
++            transition: {
++              when: 'beforeChildren',
++              opacity: { duration: 0.02 },
++              x: { delay: 0.04, duration: 0.08 },
++            },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 70));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 90));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('does not claim beforeChildren when one value has automatic timing', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: { opacity: 0, x: 0 },
++          visible: {
++            opacity: 1,
++            x: 100,
++            transition: {
++              when: 'beforeChildren',
++              opacity: { duration: 1 },
++              x: { type: 'spring' },
++            },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('waits for a finite repeating parent before starting children', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: { x: 0 },
++          visible: {
++            x: 100,
++            transition: {
++              duration: 0.04,
++              repeat: 1,
++              repeatDelay: 0.03,
++              when: 'beforeChildren',
++            },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 70));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 0');
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('does not delay children for an empty beforeChildren parent target', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: {},
++          visible: {
++            transition: { duration: 1, when: 'beforeChildren' },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('does not claim infinite beforeChildren completion timing', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        initial='hidden'
++        animate='visible'
++        variants={{
++          hidden: { x: 0 },
++          visible: {
++            x: 100,
++            transition: {
++              duration: 1,
++              repeat: Number.POSITIVE_INFINITY,
++              when: 'beforeChildren',
++            },
++          },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('explicit child animate starts a new delayChildren root', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        animate='visible'
++        variants={{
++          visible: { transition: { delayChildren: 0.2 } },
++        }}
++      >
++        <motion.view
++          data-testid='child'
++          initial='hidden'
++          animate='visible'
++          variants={{
++            hidden: { opacity: 0 },
++            visible: { opacity: 1 },
++          }}
++          transition={{ type: false }}
++        />
++      </motion.view>,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('child').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('separates transitionEnd from animated values', () => {
++    expect(
++      splitMotionTarget(
++        {
++          x: 20,
++          transition: { duration: 0.2 },
++          transitionEnd: { x: 100 },
++        },
++        undefined,
++      ),
++    ).toEqual({
++      target: { x: 20 },
++      transition: { duration: 0.2 },
++      transitionEnd: { x: 100 },
++    });
++  });
++
++  test('renders initial styles without forwarding Motion props', () => {
++    const { container } = render(
++      <motion.view
++        data-testid='box'
++        initial={{ opacity: 0, x: -30 }}
++        animate={{ opacity: 1, x: 0 }}
++        transition={{ duration: 0.01 }}
++        style={{ width: '100px', height: '100px' }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(container.firstChild).toMatchInlineSnapshot(`
++      <view
++        data-testid="box"
++        has-react-ref="true"
++        style="width: 100px; height: 100px; opacity: 0; transform: translateX(-30px);"
++      />
++    `);
++  });
++
++  test('wraps components that forward host props', () => {
++    function Card(props: IntrinsicElements['view']) {
++      return <view {...props} />;
++    }
++    const MotionCard = motion.create(Card);
++
++    const { getByTestId } = render(
++      <MotionCard data-testid='card' initial={{ opacity: 0.25 }} />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('card').getAttribute('style')).toContain(
++      'opacity: 0.25',
++    );
++  });
++
++  test('animates when a declarative target changes', async () => {
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ opacity: 0, x: -20 }}
++            animate={{ opacity: 1, x: active ? 80 : 0 }}
++            transition={{ duration: 0.01 }}
++            style={{ width: '100px', height: '100px' }}
++          />
++          <view
++            data-testid='toggle'
++            bindtap={() => setActive(value => !value)}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(80px)',
++    );
++  });
++
++  test('switches display to none only after an opacity exit completes', async () => {
++    function App() {
++      const [hidden, setHidden] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ display: 'block', opacity: 1 }}
++            animate={hidden
++              ? { display: 'none', opacity: 0 }
++              : { display: 'block', opacity: 1 }}
++            transition={{ duration: 0.08, ease: 'linear' }}
++          />
++          <view data-testid='toggle' bindtap={() => setHidden(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'display: block',
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('display: none');
++  });
++
++  test('switches visibility to hidden only after an opacity exit completes', async () => {
++    function App() {
++      const [hidden, setHidden] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ visibility: 'visible', opacity: 1 }}
++            animate={hidden
++              ? { visibility: 'hidden', opacity: 0 }
++              : { visibility: 'visible', opacity: 1 }}
++            transition={{ duration: 0.08, ease: 'linear' }}
++          />
++          <view data-testid='toggle' bindtap={() => setHidden(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'visibility: visible',
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'visibility: hidden',
++    );
++  });
++
++  test('routes value-specific transitions by animated property', async () => {
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ opacity: 0, x: 0 }}
++            animate={{ opacity: active ? 1 : 0, x: active ? 40 : 0 }}
++            transition={{
++              opacity: { duration: 0.01, ease: 'linear' },
++              x: { delay: 0.08, duration: 0.01, ease: 'linear' },
++            }}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 40));
++    });
++
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('box').getAttribute('style')).not.toContain(
++      'translateX(40px)',
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(40px)',
++    );
++  });
++
++  test('applies the latest transitionEnd after animation', async () => {
++    function App() {
++      const [step, setStep] = useState(0);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ x: 0 }}
++            animate={{
++              x: step * 20,
++              transition: { type: false },
++              transitionEnd: { x: step * 100 },
++            }}
++          />
++          <view
++            data-testid='toggle'
++            bindtap={() => {
++              setStep(1);
++              setStep(2);
++            }}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(200px)',
++    );
++  });
++
++  test('applies a transitionEnd-only animate update', async () => {
++    const lifecycle: string[] = [];
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            style={{ opacity: 1 }}
++            animate={active ? { transitionEnd: { opacity: 0.4 } } : {}}
++            transition={{ type: false }}
++            onAnimationStart={() => lifecycle.push('start')}
++            onAnimationComplete={() => lifecycle.push('complete')}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 100));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 0.4');
++    expect(lifecycle).toEqual(['start', 'complete']);
++  });
++
++  test('does not apply a stale transitionEnd-only animate update', async () => {
++    function App() {
++      const [step, setStep] = useState(0);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            animate={step === 0
++              ? { opacity: 1 }
++              : step === 1
++              ? { transitionEnd: { opacity: 0.4 } }
++              : { opacity: 0.8 }}
++            transition={{ type: false }}
++          />
++          <view
++            data-testid='toggle'
++            bindtap={() => {
++              setStep(1);
++              setStep(2);
++            }}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 0.8');
++  });
++
++  test('animates transform origin aliases', async () => {
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ originX: 0, originY: 0 }}
++            animate={active
++              ? { originX: 1, originY: 1 }
++              : { originX: 0, originY: 0 }}
++            transition={{ type: false }}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(true)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'transform-origin: 0% 0%',
++    );
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'transform-origin: 100% 100%',
++    );
++  });
++
++  test('restores a value removed from animate to its initial value', async () => {
++    function App() {
++      const [active, setActive] = useState(true);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ opacity: 0 }}
++            animate={active ? { opacity: 1 } : {}}
++            transition={{ type: false }}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(false)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 0');
++  });
++
++  test('uses the current initial value when a value leaves animate', async () => {
++    function App() {
++      const [active, setActive] = useState(true);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={{ opacity: active ? 0 : 0.5 }}
++            animate={active ? { opacity: 1 } : {}}
++            transition={{ type: false }}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(false)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 0.5');
++  });
++
++  test('keeps the current value when it leaves both animate and initial', async () => {
++    function App() {
++      const [active, setActive] = useState(true);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={active ? { opacity: 0 } : {}}
++            animate={active ? { opacity: 1 } : {}}
++            transition={{ type: false }}
++          />
++          <view data-testid='toggle' bindtap={() => setActive(false)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('does not complete an animation after unmount', async () => {
++    const onAnimationComplete = vi.fn();
++    function App() {
++      const [visible, setVisible] = useState(true);
++      return (
++        <view>
++          {visible
++            ? (
++              <motion.view
++                data-testid='box'
++                initial={{ x: 0 }}
++                animate={{ x: 40 }}
++                transition={{ duration: 0.08 }}
++                onAnimationComplete={onAnimationComplete}
++              />
++            )
++            : null}
++          <view data-testid='toggle' bindtap={() => setVisible(false)} />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 120));
++    });
++    expect(onAnimationComplete).not.toHaveBeenCalled();
++  });
++
++  test('restores a static style when its animate value is removed', async () => {
++    function App() {
++      const [ownsOpacity, setOwnsOpacity] = useState(true);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            style={{ opacity: 0.35 }}
++            animate={ownsOpacity ? { opacity: 1 } : {}}
++            transition={{ type: false }}
++          />
++          <view
++            data-testid='toggle'
++            bindtap={() => setOwnsOpacity(false)}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'opacity: 0.35',
++    );
++  });
++
++  test('skips the mount animation when initial is false', async () => {
++    const onMountAnimationStart = vi.fn();
++    const onMountAnimationComplete = vi.fn();
++    const onUpdateAnimationStart = vi.fn();
++
++    function App() {
++      const [active, setActive] = useState(false);
++      return (
++        <view>
++          <motion.view
++            data-testid='box'
++            initial={false}
++            animate={{ opacity: 1, x: active ? 48 : [0, 24] }}
++            transition={{ duration: 0.01 }}
++            onAnimationStart={active
++              ? onUpdateAnimationStart
++              : onMountAnimationStart}
++            onAnimationComplete={active ? undefined : onMountAnimationComplete}
++          />
++          <view
++            data-testid='toggle'
++            bindtap={() => setActive(true)}
++          />
++        </view>
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(24px)',
++    );
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(onMountAnimationStart).not.toHaveBeenCalled();
++    expect(onMountAnimationComplete).not.toHaveBeenCalled();
++
++    fireEvent.tap(getByTestId('toggle'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(48px)',
++    );
++    expect(onUpdateAnimationStart).toHaveBeenCalledOnce();
++  });
++
++  test('uses transitionEnd without lifecycle when initial is false', async () => {
++    const onAnimationStart = vi.fn();
++    const onAnimationComplete = vi.fn();
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='box'
++        initial={false}
++        animate={{
++          x: 20,
++          y: 20,
++          transitionEnd: { x: 10, z: 20 },
++        }}
++        transition={{ type: false }}
++        onAnimationStart={onAnimationStart}
++        onAnimationComplete={onAnimationComplete}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(10px)',
++    );
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateY(20px)',
++    );
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateZ(20px)',
++    );
++    expect(onAnimationStart).not.toHaveBeenCalled();
++    expect(onAnimationComplete).not.toHaveBeenCalled();
++  });
++
++  test('applies transitionEnd from an initial variant on the first frame', () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='box'
++        initial='visible'
++        variants={{
++          visible: {
++            opacity: 1,
++            transitionEnd: { display: 'none' },
++          },
++        }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    expect(getByTestId('box').getAttribute('style')).toContain('opacity: 1');
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'display: none',
++    );
++  });
++
++  test('animates a MotionValue-backed style', async () => {
++    function App() {
++      const value = useMotionValue(1);
++      return (
++        <motion.view
++          data-testid='box'
++          animate={{ scale: 1.5 }}
++          transition={{ duration: 0.01 }}
++          style={{ scale: value }}
++        />
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++
++    expect(getByTestId('box').getAttribute('style')).toContain('scale(1.5)');
++  });
++
++  test('updates a MotionValue-backed style from a background event', async () => {
++    function App() {
++      const x = useMotionValue(-36);
++      function move() {
++        x.set(36);
++      }
++      return (
++        <motion.view
++          data-testid='box'
++          bindtap={move}
++          style={{ x }}
++        />
++      );
++    }
++
++    const { getByTestId } = render(<App />, {
++      enableMainThread: true,
++      enableBackgroundThread: true,
++    });
++
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(-36px)',
++    );
++    fireEvent.tap(getByTestId('box'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 0));
++    });
++    expect(getByTestId('box').getAttribute('style')).toContain(
++      'translateX(36px)',
++    );
++  });
++
++  test('animates while pressed and restores the resting style', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        style={{ backgroundColor: '#ffffff' }}
++        whileTap={{ scale: 1.15, backgroundColor: '#ffcc00' }}
++        transition={{ duration: 0.01 }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    fireEvent.touchstart(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'scale(1.15',
++    );
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'rgb(255, 204, 0)',
++    );
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'transform: scale(1, 1);',
++    );
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'rgb(255, 255, 255)',
++    );
++  });
++
++  test('applies and restores a tap transitionEnd value', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        style={{ opacity: 1 }}
++        whileTap={{
++          opacity: 0.5,
++          transitionEnd: { opacity: 0.75 },
++        }}
++        transition={{ duration: 0.01 }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    fireEvent.touchstart(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'opacity: 0.75',
++    );
++
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('applies a transitionEnd-only tap definition', async () => {
++    const lifecycle: string[] = [];
++    const onAnimationStart = vi.fn((value: MotionTarget) => {
++      lifecycle.push(`start:${String(value.transitionEnd !== undefined)}`);
++    });
++    const onAnimationComplete = vi.fn((value: MotionTarget) => {
++      lifecycle.push(`complete:${String(value.transitionEnd !== undefined)}`);
++    });
++    const definition = { transitionEnd: { opacity: 0.4 } };
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        style={{ opacity: 1 }}
++        whileTap={definition}
++        transition={{ type: false }}
++        onAnimationStart={onAnimationStart}
++        onAnimationComplete={onAnimationComplete}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    fireEvent.touchstart(getByTestId('button'));
++    await act(async () => {
++      await Promise.resolve();
++      await new Promise(resolve => setTimeout(resolve, 80));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'opacity: 0.4',
++    );
++    expect(lifecycle).toEqual(['start:true', 'complete:true']);
++    expect(onAnimationStart).toHaveBeenCalledWith(definition);
++    expect(onAnimationComplete).toHaveBeenCalledWith(definition);
++
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 10));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('does not apply a stale transitionEnd-only tap after release', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        style={{ opacity: 1 }}
++        whileTap={{ transitionEnd: { opacity: 0.4 } }}
++        transition={{ type: false }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    fireEvent.touchstart(getByTestId('button'));
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('uses the initial transition when a tap restores its base value', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        initial={{ opacity: 1, transition: { type: false } }}
++        whileTap={{ opacity: 0.5, transition: { duration: 1 } }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    fireEvent.touchstart(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('button').getAttribute('style')).not.toContain(
++      'opacity: 1',
++    );
++
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 30));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain('opacity: 1');
++  });
++
++  test('restores every value after interrupting a tap animation', async () => {
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        style={{ scale: 1, backgroundColor: '#ffffff' }}
++        whileTap={{ scale: 1.15, backgroundColor: '#ffcc00' }}
++        transition={{ duration: 0.2 }}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 50));
++    });
++    fireEvent.touchstart(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 10));
++    });
++    expect(getByTestId('button').getAttribute('style')).not.toContain(
++      'rgb(255, 255, 255)',
++    );
++    fireEvent.touchend(getByTestId('button'));
++    await act(async () => {
++      await new Promise(resolve => setTimeout(resolve, 300));
++    });
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'transform: scale(1, 1);',
++    );
++    expect(getByTestId('button').getAttribute('style')).toContain(
++      'rgb(255, 255, 255)',
++    );
++  });
++
++  test('composes gesture callbacks with external host handlers', () => {
++    const onTapStart = vi.fn();
++    const onTap = vi.fn();
++    const onTapCancel = vi.fn();
++    const externalTouchStart = vi.fn();
++    const externalTouchEnd = vi.fn();
++    const externalTouchCancel = vi.fn();
++    const { getByTestId } = render(
++      <motion.view
++        data-testid='button'
++        onTapStart={onTapStart}
++        onTap={onTap}
++        onTapCancel={onTapCancel}
++        bindtouchstart={externalTouchStart}
++        bindtouchend={externalTouchEnd}
++        bindtouchcancel={externalTouchCancel}
++      />,
++      { enableMainThread: true, enableBackgroundThread: true },
++    );
++
++    fireEvent.touchstart(getByTestId('button'));
++    expect(onTapStart).toHaveBeenCalledOnce();
++    expect(externalTouchStart).toHaveBeenCalledOnce();
++
++    fireEvent.touchend(getByTestId('button'));
++    expect(onTap).toHaveBeenCalledOnce();
++    expect(externalTouchEnd).toHaveBeenCalledOnce();
++
++    fireEvent.touchstart(getByTestId('button'));
++    fireEvent.touchcancel(getByTestId('button'));
++    expect(onTapStart).toHaveBeenCalledTimes(2);
++    expect(externalTouchStart).toHaveBeenCalledTimes(2);
++    expect(onTap).toHaveBeenCalledOnce();
++    expect(onTapCancel).toHaveBeenCalledOnce();
++    expect(externalTouchCancel).toHaveBeenCalledOnce();
++  });
++});
+diff --git a/packages/motion/__tests__/element.test.tsx b/packages/motion/__tests__/element.test.tsx
+index eb90b18e1..6e0827685 100644
+--- a/packages/motion/__tests__/element.test.tsx
++++ b/packages/motion/__tests__/element.test.tsx
+@@ -31,9 +31,9 @@ describe('ElementCompt (unit tests)', () => {
+           height: '50px',
+           left: '10px',
+           top: '20px',
+-          backgroundColor: 'red',
++          'background-color': 'red',
+           color: 'blue',
+-          fontSize: '16px',
++          'font-size': '16px',
+           margin: '5px',
+           padding: '10px',
+           display: 'block',
+@@ -73,6 +73,28 @@ describe('ElementCompt (unit tests)', () => {
+     expect(mockSetStyleProperty).toHaveBeenCalledWith('opacity', '0.5');
+   });
+ 
++  test('style proxy converts camel-case properties for the Lynx API', () => {
++    const compt = new ElementCompt(mockElement);
++
++    compt.style.backgroundColor = 'red';
++
++    expect(mockSetStyleProperty).toHaveBeenCalledWith(
++      'background-color',
++      'red',
++    );
++  });
++
++  test('style proxy setProperty preserves CSS custom property names', () => {
++    const compt = new ElementCompt(mockElement);
++
++    compt.style.setProperty('--motion-color', '#000');
++
++    expect(mockSetStyleProperty).toHaveBeenCalledWith(
++      '--motion-color',
++      '#000',
++    );
++  });
++
+   test('style proxy set with transform=none should use scale(1,1)', () => {
+     const compt = new ElementCompt(mockElement);
+ 
+@@ -109,7 +131,7 @@ describe('ElementCompt (unit tests)', () => {
+     expect(compt.backgroundColor).toBe('red');
+     compt.backgroundColor = 'blue';
+     expect(mockSetStyleProperty).toHaveBeenCalledWith(
+-      'backgroundColor',
++      'background-color',
+       'blue',
+     );
+   });
+@@ -127,7 +149,7 @@ describe('ElementCompt (unit tests)', () => {
+ 
+     expect(compt.fontSize).toBe('16px');
+     compt.fontSize = '24px';
+-    expect(mockSetStyleProperty).toHaveBeenCalledWith('fontSize', '24px');
++    expect(mockSetStyleProperty).toHaveBeenCalledWith('font-size', '24px');
+   });
+ 
+   test('width getter/setter', () => {
+diff --git a/packages/motion/__tests__/hooks.test.tsx b/packages/motion/__tests__/hooks.test.tsx
+index 5486906e4..3a33f6512 100644
+--- a/packages/motion/__tests__/hooks.test.tsx
++++ b/packages/motion/__tests__/hooks.test.tsx
+@@ -5,12 +5,13 @@
+ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+ 
+ import { runOnMainThread, useEffect, useMainThreadRef } from '@lynx-js/react';
+-import { act, render } from '@lynx-js/react/testing-library';
++import { act, fireEvent, render } from '@lynx-js/react/testing-library';
+ 
+ import {
+   useMotionValueRef,
+   useMotionValueRefEvent,
+ } from '../src/mini/index.js';
++import { useMotionValue } from '../src/index.js';
+ import { noop } from '../src/utils/noop.js';
+ 
+ describe('Hooks', () => {
+@@ -99,6 +100,75 @@ describe('Hooks', () => {
+     });
+   });
+ 
++  describe('useMotionValue', () => {
++    test('creates a typed main-thread value handle', () => {
++      let value: unknown;
++      const App = () => {
++        value = useMotionValue(42);
++        return <view />;
++      };
++
++      render(<App />, {
++        enableMainThread: true,
++        enableBackgroundThread: true,
++      });
++
++      expect(
++        (value as { toJSON(): { _initValue: number; _type: string } }).toJSON(),
++      ).toMatchObject({
++        _initValue: 42,
++        _type: '@lynx-js/motion/MotionValue',
++      });
++    });
++
++    test('preserves one realized MotionValue across handlers', () => {
++      const App = () => {
++        const value = useMotionValue(42);
++        const remember = () => {
++          'main thread';
++          (globalThis as { __motionValueIdentity?: unknown })
++            .__motionValueIdentity = value;
++          value.set(43);
++        };
++        const compare = () => {
++          'main thread';
++          const state = globalThis as {
++            __motionValueIdentity?: unknown;
++            __motionValueIdentityMatches?: boolean;
++            __motionValueResult?: number;
++          };
++          state.__motionValueIdentityMatches = state.__motionValueIdentity
++            === value;
++          state.__motionValueResult = value.get();
++        };
++        return (
++          <view>
++            <view data-testid='remember' main-thread:bindtap={remember} />
++            <view data-testid='compare' main-thread:bindtap={compare} />
++          </view>
++        );
++      };
++      const { getByTestId } = render(<App />, {
++        enableMainThread: true,
++        enableBackgroundThread: true,
++      });
++
++      fireEvent.tap(getByTestId('remember'));
++      fireEvent.tap(getByTestId('compare'));
++
++      const state = globalThis as {
++        __motionValueIdentity?: unknown;
++        __motionValueIdentityMatches?: boolean;
++        __motionValueResult?: number;
++      };
++      expect(state.__motionValueIdentityMatches).toBe(true);
++      expect(state.__motionValueResult).toBe(43);
++      delete state.__motionValueIdentity;
++      delete state.__motionValueIdentityMatches;
++      delete state.__motionValueResult;
++    });
++  });
++
+   describe('useMotionValueRefEvent', () => {
+     test('should set up event listener without errors', () => {
+       const callback = vi.fn();
+diff --git a/packages/motion/__tests__/index.test.ts b/packages/motion/__tests__/index.test.ts
+index 7a31fda94..96e3f220c 100644
+--- a/packages/motion/__tests__/index.test.ts
++++ b/packages/motion/__tests__/index.test.ts
+@@ -19,6 +19,8 @@ describe('Main package exports', () => {
+     expect(module.clamp).toBeDefined();
+     expect(module.transformValue).toBeDefined();
+     expect(module.styleEffect).toBeDefined();
++    expect(module.motion).toBeDefined();
++    expect(module.motion.view).toBeDefined();
+   });
+ 
+   test('should export hooks', async () => {
+@@ -26,5 +28,6 @@ describe('Main package exports', () => {
+ 
+     expect(module.useMotionValueRefEvent).toBeDefined();
+     expect(module.useMotionValueRef).toBeDefined();
++    expect(module.useMotionValue).toBeDefined();
+   });
+ });
+diff --git a/packages/motion/package.json b/packages/motion/package.json
+index 8ca570f8c..a73e22d55 100644
+--- a/packages/motion/package.json
++++ b/packages/motion/package.json
+@@ -16,6 +16,8 @@
+   },
+   "license": "Apache-2.0",
+   "sideEffects": [
++    "./dist/animation/index.js",
++    "./dist/declarative/mainThreadDependencies.js",
+     "./dist/polyfill/shim.js",
+     "./dist/mini/polyfill.js"
+   ],
+diff --git a/packages/motion/src/declarative/mainThreadDependencies.ts b/packages/motion/src/declarative/mainThreadDependencies.ts
+new file mode 100644
+index 000000000..4087900ba
+--- /dev/null
++++ b/packages/motion/src/declarative/mainThreadDependencies.ts
+@@ -0,0 +1,8 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++// Declarative effects capture worklets exported from this entry. Keep the
++// entry in the main-thread chunk so those worklets are registered before the
++// background thread dispatches an effect.
++import '../animation/index.js';
+diff --git a/packages/motion/src/declarative/motion.tsx b/packages/motion/src/declarative/motion.tsx
+new file mode 100644
+index 000000000..00da7648c
+--- /dev/null
++++ b/packages/motion/src/declarative/motion.tsx
+@@ -0,0 +1,1528 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++// This must be evaluated before Motion's runtime modules. In QuickJS,
++// motion-dom reads queueMicrotask during module initialization.
++import './mainThreadDependencies.js';
++
++import { animate as animateValue } from 'motion' with { runtime: 'shared' };
++import type {
++  AnimationPlaybackControlsWithThen,
++  MotionValue,
++} from 'motion-dom';
++import {
++  animateMotionValue as createMotionValueAnimation,
++  getValueTransition,
++  motionValue,
++  styleEffect,
++} from 'motion-dom' with {
++  runtime: 'shared',
++};
++
++import type {
++  ComponentType,
++  FunctionComponent,
++  ReactNode,
++} from '@lynx-js/react';
++import {
++  createContext,
++  createElement,
++  runOnBackground,
++  runOnMainThread,
++  useContext,
++  useEffect,
++  useMainThreadRef,
++  useMemo,
++  useRef,
++} from '@lynx-js/react';
++import type { IntrinsicElements, MainThread } from '@lynx-js/types';
++
++import {
++  collectMotionValues,
++  motionDefinitionKey,
++  resolveInitialStyle,
++  resolveInitialValues,
++  resolveMotionDefinition,
++  splitMotionTarget,
++} from './style.js';
++import type {
++  MotionComponentProps,
++  MotionDefinition,
++  MotionFactory,
++  MotionImageProps,
++  MotionProps,
++  MotionTarget,
++  MotionTextProps,
++  MotionTransition,
++  MotionViewProps,
++} from './types.js';
++
++interface MotionVariantContextValue {
++  initial?: MotionDefinition | false;
++  animate?: MotionDefinition;
++  delay?: number;
++}
++
++const emptyMotionVariantContext: MotionVariantContextValue = {};
++const MotionVariantContext = createContext<MotionVariantContextValue>({});
++
++function isVariantLabel(
++  definition: MotionDefinition | false | undefined,
++): definition is string | string[] {
++  return typeof definition === 'string' || Array.isArray(definition);
++}
++
++function getExplicitTargetDuration(
++  target: MotionTarget | undefined,
++  transition: MotionTransition | undefined,
++): number {
++  if (!target || !transition) {
++    return 0;
++  }
++  let longestDuration = 0;
++  let targetCount = 0;
++  for (const key in target) {
++    targetCount += 1;
++    const valueTransition = getValueTransition(
++      transition,
++      key,
++    ) as MotionTransition;
++    if (
++      typeof valueTransition?.duration !== 'number'
++      || valueTransition.type === false
++    ) {
++      return 0;
++    }
++    const repeat = valueTransition.repeat ?? 0;
++    if (!Number.isFinite(repeat) || repeat < 0) {
++      return 0;
++    }
++    const repeatDelay = typeof valueTransition.repeatDelay === 'number'
++      ? valueTransition.repeatDelay
++      : 0;
++    longestDuration = Math.max(
++      longestDuration,
++      valueTransition.duration * (repeat + 1)
++        + repeatDelay * repeat
++        + (typeof valueTransition.delay === 'number'
++          ? valueTransition.delay
++          : 0),
++    );
++  }
++  return targetCount > 0 ? longestDuration : 0;
++}
++
++function useInheritedMotionProps<Props extends MotionProps>(props: Props): {
++  context: MotionVariantContextValue;
++  delay: number;
++  inheritsAnimate: boolean;
++  props: Props;
++  resolvedAnimateDefinition: MotionTarget | false | undefined;
++} {
++  const parent = useContext(MotionVariantContext);
++  const inheritsAnimate = props.inherit !== false
++    && props.animate === undefined
++    && isVariantLabel(parent.animate);
++  const initial = inheritsAnimate
++      && props.initial === undefined
++      && (parent.initial === false || isVariantLabel(parent.initial))
++    ? parent.initial
++    : props.initial;
++  const animate = inheritsAnimate
++    ? parent.animate
++    : props.animate;
++  const resolvedAnimateDefinition = resolveMotionDefinition(
++    animate,
++    props.variants,
++    props.custom,
++  );
++  const resolvedAnimate = splitMotionTarget(
++    resolvedAnimateDefinition,
++    props.transition,
++  );
++  const inheritedDelay = inheritsAnimate ? parent.delay ?? 0 : 0;
++  const delayChildren = resolvedAnimate.transition?.delayChildren;
++  const beforeChildrenDelay = resolvedAnimate.transition?.when
++      === 'beforeChildren'
++    ? getExplicitTargetDuration(
++      resolvedAnimate.target,
++      resolvedAnimate.transition,
++    )
++    : 0;
++  const childDelay = inheritedDelay
++    + beforeChildrenDelay
++    + (typeof delayChildren === 'number' ? delayChildren : 0);
++  const context = useMemo<MotionVariantContextValue>(() => ({
++    ...(initial === false || isVariantLabel(initial) ? { initial } : {}),
++    ...(isVariantLabel(animate) ? { animate } : {}),
++    ...(childDelay ? { delay: childDelay } : {}),
++  }), [animate, childDelay, initial]);
++  return {
++    context,
++    delay: inheritedDelay,
++    inheritsAnimate,
++    props: initial === props.initial && animate === props.animate
++      ? props
++      : { ...props, initial, animate },
++    resolvedAnimateDefinition,
++  };
++}
++
++function shouldProvideVariantContext(
++  props: MotionProps,
++  context: MotionVariantContextValue,
++  children: unknown,
++): boolean {
++  return children !== undefined
++    && props.whileTap === undefined
++    && props.whileHover === undefined
++    && (props.inherit === false
++      || isVariantLabel(context.initial)
++      || isVariantLabel(context.animate));
++}
++
++function variantContextValue(
++  props: MotionProps,
++  context: MotionVariantContextValue,
++): MotionVariantContextValue {
++  return props.inherit === false ? emptyMotionVariantContext : context;
++}
++
++type PreparedHostProps = Record<string, unknown> & {
++  style?: MotionProps['style'];
++  'main-thread:ref': ReturnType<
++    typeof useMainThreadRef<MainThread.Element | null>
++  >;
++};
++
++type AnimateMotionTarget = (
++  value: MotionValue<string | number> | Element,
++  keyframes: unknown,
++  options: MotionTransition | undefined,
++) => AnimationPlaybackControlsWithThen;
++
++// Running animations are only ever stopped. motion-dom exposes
++// `MotionValue.animation` as a narrower view than its playback controls.
++type StoppableAnimation = Pick<AnimationPlaybackControlsWithThen, 'stop'>;
++
++type BackgroundTouchHandler = (event: unknown) => void;
++
++function tapInfo(event: unknown) {
++  const touchEvent = event as {
++    detail?: { x?: unknown; y?: unknown };
++    touches?: Array<{ clientX?: unknown; clientY?: unknown }>;
++  };
++  const touch = touchEvent.touches?.[0];
++  const x = touchEvent.detail?.x ?? touch?.clientX;
++  const y = touchEvent.detail?.y ?? touch?.clientY;
++  return {
++    point: {
++      x: typeof x === 'number' ? x : 0,
++      y: typeof y === 'number' ? y : 0,
++    },
++  };
++}
++
++function useMotionHostProps<Props extends MotionProps>(
++  props: Props,
++  inheritedDelay = 0,
++  inheritedResolvedAnimate?: MotionTarget | false,
++  inheritsAnimate = false,
++): PreparedHostProps {
++  const {
++    animate,
++    initial,
++    inherit: _inherit,
++    style,
++    transition,
++    whileTap,
++    whileHover,
++    variants,
++    custom,
++    onTapStart,
++    onTap,
++    onTapCancel,
++    onHoverStart,
++    onHoverEnd,
++    onAnimationStart,
++    onAnimationComplete,
++    bindtouchstart: externalTouchStart,
++    bindtouchend: externalTouchEnd,
++    bindtouchcancel: externalTouchCancel,
++    bindlayoutchange: externalLayoutChange,
++    'global-bindmousemove': externalGlobalMouseMove,
++    'main-thread:ref': _externalMainThreadRef,
++    ...hostProps
++  } = props as Props & {
++    bindtouchstart?: BackgroundTouchHandler;
++    bindtouchend?: BackgroundTouchHandler;
++    bindtouchcancel?: BackgroundTouchHandler;
++    bindlayoutchange?: BackgroundTouchHandler;
++    'global-bindmousemove'?: BackgroundTouchHandler;
++    'main-thread:ref'?: unknown;
++  };
++  const elementRef = useMainThreadRef<MainThread.Element | null>(null);
++  const animationRef = useMainThreadRef<StoppableAnimation[]>([]);
++  const interactionAnimationRef = useMainThreadRef<StoppableAnimation[]>([]);
++  const hoverActiveRef = useMainThreadRef(false);
++  const tapActiveRef = useMainThreadRef(false);
++  const animationGenerationRef = useMainThreadRef(0);
++  const interactionAnimationGenerationRef = useMainThreadRef(0);
++  const interactionAnimationCompletionRef = useMainThreadRef<{
++    generation: number;
++    pending: number;
++  }>({ generation: 0, pending: 0 });
++  const interactionAnimationValueKeysRef = useMainThreadRef<
++    Record<string, true>
++  >({});
++  const animateTargetKeysRef = useMainThreadRef<Record<string, true>>({});
++  const hoverLayoutRef = useRef<
++    { left: number; right: number; top: number; bottom: number } | null
++  >(null);
++  const hoverActiveBackgroundRef = useRef(false);
++  const generatedValuesRef = useMainThreadRef<
++    Record<string, MotionValue<string | number>>
++  >({});
++  const styleCleanupRef = useMainThreadRef<(() => void) | null>(null);
++  const hasMountedAnimationRef = useRef(false);
++  const hadAnimateTargetRef = useRef(false);
++
++  const resolvedInitial = resolveMotionDefinition(initial, variants, custom);
++  const resolvedAnimateDefinition = inheritedResolvedAnimate
++    ?? resolveMotionDefinition(animate, variants, custom);
++  const resolvedTapDefinition = resolveMotionDefinition(
++    whileTap,
++    variants,
++    custom,
++  );
++  const resolvedHoverDefinition = resolveMotionDefinition(
++    whileHover,
++    variants,
++    custom,
++  );
++  const resolvedInitialMotion = resolvedInitial === false
++    ? undefined
++    : splitMotionTarget(resolvedInitial, transition);
++  const resolvedInitialTarget = resolvedInitial === false
++    ? false
++    : (resolvedInitialMotion
++      ? {
++        ...resolvedInitialMotion.target,
++        ...resolvedInitialMotion.transitionEnd,
++      }
++      : undefined);
++  const resolvedAnimate = splitMotionTarget(
++    resolvedAnimateDefinition,
++    transition,
++  );
++  const resolvedTap = splitMotionTarget(resolvedTapDefinition, transition);
++  const resolvedHover = splitMotionTarget(
++    resolvedHoverDefinition,
++    transition,
++  );
++  const initialFalseAnimateTarget = resolvedInitial === false
++    ? {
++      ...resolvedAnimate.target,
++      ...resolvedAnimate.transitionEnd,
++    }
++    : resolvedAnimate.target;
++  const animationKey = motionDefinitionKey({
++    animate: resolvedAnimate,
++    whileTap: resolvedTap,
++    whileHover: resolvedHover,
++  });
++  const styleKey = motionDefinitionKey(style);
++  const initialStyle = useMemo(
++    () =>
++      resolveInitialStyle(
++        style,
++        resolvedInitialTarget,
++        initialFalseAnimateTarget,
++      ),
++    [initialFalseAnimateTarget, resolvedInitialTarget, style],
++  );
++  const initialValues = useMemo(
++    () =>
++      resolveInitialValues(
++        style,
++        resolvedInitialTarget,
++        initialFalseAnimateTarget,
++      ),
++    [initialFalseAnimateTarget, resolvedInitialTarget, style],
++  );
++  const removedAnimateFallbackValues = useMemo(
++    () =>
++      inheritsAnimate
++        ? resolveInitialValues(style, undefined)
++        : initialValues,
++    [inheritsAnimate, initialValues, style],
++  );
++  const workletAnimateTransition = useMemo(
++    () =>
++      inheritedDelay && resolvedAnimate.transition?.delay === undefined
++        ? {
++          ...resolvedAnimate.transition,
++          delay: inheritedDelay,
++          ...(resolvedAnimate.transition?.repeat === Number.POSITIVE_INFINITY
++            ? { repeat: -1 }
++            : {}),
++        }
++        : (resolvedAnimate.transition?.repeat === Number.POSITIVE_INFINITY
++          ? { ...resolvedAnimate.transition, repeat: -1 }
++          : resolvedAnimate.transition),
++    [inheritedDelay, resolvedAnimate.transition],
++  );
++  const workletInitialTransition = useMemo(
++    () =>
++      resolvedInitialMotion?.transition?.repeat === Number.POSITIVE_INFINITY
++        ? { ...resolvedInitialMotion.transition, repeat: -1 }
++        : resolvedInitialMotion?.transition,
++    [resolvedInitialMotion?.transition],
++  );
++  const workletTapTransition = useMemo(
++    () =>
++      resolvedTap.transition?.repeat === Number.POSITIVE_INFINITY
++        ? { ...resolvedTap.transition, repeat: -1 }
++        : resolvedTap.transition,
++    [resolvedTap.transition],
++  );
++  const workletHoverTransition = useMemo(
++    () =>
++      resolvedHover.transition?.repeat === Number.POSITIVE_INFINITY
++        ? { ...resolvedHover.transition, repeat: -1 }
++        : resolvedHover.transition,
++    [resolvedHover.transition],
++  );
++  const motionValues = useMemo(
++    () => collectMotionValues(style),
++    [styleKey],
++  );
++
++  const bindTouchStart = onTapStart || externalTouchStart
++    ? (event: unknown) => {
++      externalTouchStart?.(event);
++      onTapStart?.(event, tapInfo(event));
++    }
++    : undefined;
++  const bindTouchEnd = onTap || externalTouchEnd
++    ? (event: unknown) => {
++      externalTouchEnd?.(event);
++      onTap?.(event, tapInfo(event));
++    }
++    : undefined;
++  const bindTouchCancel = onTapCancel || externalTouchCancel
++    ? (event: unknown) => {
++      externalTouchCancel?.(event);
++      onTapCancel?.(event, tapInfo(event));
++    }
++    : undefined;
++  const hasHoverInteraction = [
++    resolvedHover.target,
++    onHoverStart,
++    onHoverEnd,
++  ].some(Boolean);
++  const bindLayoutChange = hasHoverInteraction || externalLayoutChange
++    ? (event: unknown) => {
++      externalLayoutChange?.(event);
++      if (!hasHoverInteraction) {
++        return;
++      }
++      const detail = (event as {
++        detail?: Record<string, unknown>;
++      }).detail;
++      if (
++        typeof detail?.['left'] === 'number'
++        && typeof detail['right'] === 'number'
++        && typeof detail['top'] === 'number'
++        && typeof detail['bottom'] === 'number'
++      ) {
++        hoverLayoutRef.current = {
++          left: detail['left'],
++          right: detail['right'],
++          top: detail['top'],
++          bottom: detail['bottom'],
++        };
++      }
++    }
++    : undefined;
++  const bindGlobalMouseMove = hasHoverInteraction || externalGlobalMouseMove
++    ? (event: unknown) => {
++      externalGlobalMouseMove?.(event);
++      const layout = hoverLayoutRef.current;
++      if (!hasHoverInteraction || !layout) {
++        return;
++      }
++      const mouseEvent = event as { x?: unknown; y?: unknown };
++      const isInside = typeof mouseEvent.x === 'number'
++        && typeof mouseEvent.y === 'number'
++        && mouseEvent.x >= layout.left
++        && mouseEvent.x <= layout.right
++        && mouseEvent.y >= layout.top
++        && mouseEvent.y <= layout.bottom;
++      if (isInside === hoverActiveBackgroundRef.current) {
++        return;
++      }
++      hoverActiveBackgroundRef.current = isInside;
++      if (isInside) {
++        onHoverStart?.(event);
++        if (resolvedHover.target) {
++          void runOnMainThread(startHoverAnimation)();
++        }
++      } else {
++        onHoverEnd?.(event);
++        if (resolvedHover.target) {
++          void runOnMainThread(endHoverAnimation)();
++        }
++      }
++    }
++    : undefined;
++
++  useEffect(() => {
++    const hadAnimateTarget = hadAnimateTargetRef.current;
++    hadAnimateTargetRef.current = Boolean(
++      resolvedAnimate.target
++        && Object.keys(resolvedAnimate.target).length > 0,
++    );
++    if (
++      !resolvedAnimate.target
++      && !resolvedTap.target
++      && !resolvedHover.target
++      && Object.keys(motionValues).length === 0
++      && !hadAnimateTarget
++    ) {
++      return;
++    }
++    // Worklet hydration replaces MainThreadObject handles in captured objects.
++    // Capture a fresh record so Lynx for Web doesn't mutate the memoized source
++    // that a later React render will reuse.
++    const motionValueBindings = { ...motionValues };
++    const shouldAnimateTarget = resolvedInitialTarget !== false
++      || hasMountedAnimationRef.current;
++    hasMountedAnimationRef.current = true;
++
++    function updateMotionStyles(
++      target: MotionTarget | undefined,
++      interactionTarget: MotionTarget | undefined,
++      hoverTarget: MotionTarget | undefined,
++      transitionEnd: Record<string, unknown> | undefined,
++      options: MotionTransition | undefined,
++      startingValues: Record<string, unknown>,
++      removedTargetFallbackValues: Record<string, unknown>,
++      restoreRemovedTargetIdentity: boolean,
++      shouldAnimate: boolean,
++    ) {
++      'main thread';
++
++      for (const animation of animationRef.current) {
++        animation.stop();
++      }
++      animationRef.current = [];
++      for (const animation of interactionAnimationRef.current) {
++        animation.stop();
++      }
++      interactionAnimationRef.current = [];
++      for (const key in interactionAnimationValueKeysRef.current) {
++        (generatedValuesRef.current[key] ?? motionValueBindings[key])?.stop();
++      }
++      interactionAnimationValueKeysRef.current = {};
++      interactionAnimationGenerationRef.current += 1;
++      const animationGeneration = animationGenerationRef.current + 1;
++      animationGenerationRef.current = animationGeneration;
++      styleCleanupRef.current?.();
++      styleCleanupRef.current = null;
++
++      if (!elementRef.current) {
++        return;
++      }
++
++      const resolvedOptions = (options?.repeat === -1
++        ? { ...options, repeat: Number.POSITIVE_INFINITY }
++        : options) ?? {};
++      const values = { ...motionValueBindings };
++      const targetValues = (target ?? {}) as Record<string, unknown>;
++      const ownedTargetValues = {
++        ...targetValues,
++        ...transitionEnd,
++      };
++      const animationTargetValues: Record<string, unknown> = {};
++      for (const key in animateTargetKeysRef.current) {
++        if (!(key in ownedTargetValues)) {
++          if (removedTargetFallbackValues[key] === undefined) {
++            if (
++              restoreRemovedTargetIdentity
++              && (key === 'opacity'
++                || key === 'x'
++                || key === 'y'
++                || key === 'z'
++                || key === 'translateX'
++                || key === 'translateY'
++                || key === 'translateZ'
++                || key.startsWith('scale')
++                || key.startsWith('rotate')
++                || key.startsWith('skew'))
++            ) {
++              animationTargetValues[key] = key === 'opacity'
++                  || key.startsWith('scale')
++                ? 1
++                : 0;
++              continue;
++            }
++            const retainedValue = generatedValuesRef.current[key];
++            if (retainedValue) {
++              retainedValue.stop();
++              const retainedSnapshot = motionValue(retainedValue.get());
++              generatedValuesRef.current[key] = retainedSnapshot;
++              values[key] = retainedSnapshot;
++            }
++          } else {
++            animationTargetValues[key] = removedTargetFallbackValues[key];
++          }
++        }
++      }
++      animateTargetKeysRef.current = {};
++      for (const key in ownedTargetValues) {
++        animateTargetKeysRef.current[key] = true;
++      }
++      for (const key in targetValues) {
++        animationTargetValues[key] = targetValues[key];
++      }
++      const targets = [
++        animationTargetValues,
++        interactionTarget,
++        hoverTarget,
++      ];
++      for (const definition of targets) {
++        if (!definition) {
++          continue;
++        }
++        const targetValues = definition as Record<string, unknown>;
++        const isInteractionTarget = definition === interactionTarget;
++        for (const key in targetValues) {
++          if (!values[key]) {
++            let value = generatedValuesRef.current[key];
++            if (!value) {
++              const targetValue = targetValues[key];
++              let firstTarget: unknown = targetValue;
++              if (Array.isArray(targetValue)) {
++                const keyframes = targetValue as unknown[];
++                firstTarget = keyframes.find(value => value !== null);
++              }
++              let initialValue = startingValues[key];
++              if (
++                initialValue === undefined
++                && !isInteractionTarget
++                && Array.isArray(targetValue)
++              ) {
++                initialValue = firstTarget;
++              }
++              let resolvedInitialValue = initialValue;
++              if (resolvedInitialValue === undefined) {
++                if (key.startsWith('scale') || key === 'opacity') {
++                  resolvedInitialValue = 1;
++                } else if (
++                  key === 'x'
++                  || key === 'y'
++                  || key === 'z'
++                  || key.startsWith('translate')
++                  || key.startsWith('rotate')
++                  || key.startsWith('skew')
++                ) {
++                  resolvedInitialValue = 0;
++                } else {
++                  resolvedInitialValue = firstTarget;
++                }
++              }
++              if (
++                typeof resolvedInitialValue !== 'string'
++                && typeof resolvedInitialValue !== 'number'
++              ) {
++                continue;
++              }
++              value = motionValue(resolvedInitialValue);
++              generatedValuesRef.current[key] = value;
++            }
++            values[key] = value;
++          }
++        }
++      }
++
++      let motionElement: Element | undefined;
++      if (Object.keys(values).length > 0) {
++        // `mainThreadDependencies` installs ElementCompt as the main-thread
++        // Element constructor. Construct it here instead of capturing another
++        // package worklet: Lynx for Web currently leaves nested/cross-module
++        // worklet references as non-callable descriptors.
++        const ElementConstructor = globalThis.Element as unknown as new(
++          element: MainThread.Element,
++        ) => Element;
++        motionElement = new ElementConstructor(elementRef.current);
++        styleCleanupRef.current = styleEffect(motionElement, values);
++      }
++
++      function applyAnimateTransitionEnd() {
++        let addedValue = false;
++        for (const key in transitionEnd) {
++          const finalValue = transitionEnd[key];
++          let value = values[key];
++          if (!value && finalValue !== undefined) {
++            value = motionValue(finalValue as string | number);
++            generatedValuesRef.current[key] = value;
++            values[key] = value;
++            addedValue = true;
++          } else if (value && finalValue !== undefined) {
++            value.set(finalValue as never);
++          }
++        }
++        if (addedValue && elementRef.current) {
++          const ElementConstructor = globalThis.Element as unknown as new(
++            element: MainThread.Element,
++          ) => Element;
++          motionElement ??= new ElementConstructor(elementRef.current);
++          styleCleanupRef.current?.();
++          styleCleanupRef.current = styleEffect(motionElement, values);
++        }
++      }
++
++      const completionPromises: Promise<void>[] = [];
++      if (shouldAnimate) {
++        for (const key in animationTargetValues) {
++          const value = values[key];
++          const targetValue = animationTargetValues[key];
++          if (value && targetValue !== undefined) {
++            completionPromises.push(value.start(
++              createMotionValueAnimation(
++                key,
++                value,
++                targetValue as never,
++                resolvedOptions as never,
++              ),
++            ));
++            if (value.animation) {
++              animationRef.current.push(value.animation);
++            }
++          }
++        }
++      }
++
++      if (
++        completionPromises.length > 0
++        && animate !== undefined
++        && onAnimationStart
++      ) {
++        void runOnBackground(onAnimationStart)(animate);
++      }
++      const hasTransitionEnd = Boolean(
++        transitionEnd && Object.keys(transitionEnd).length > 0,
++      );
++      if (
++        completionPromises.length === 0
++        && animate !== undefined
++        && hasTransitionEnd
++      ) {
++        if (shouldAnimate && onAnimationStart) {
++          void runOnBackground(onAnimationStart)(animate);
++        }
++        const reportAnimationComplete = shouldAnimate && onAnimationComplete
++          ? runOnBackground(onAnimationComplete)
++          : undefined;
++        if (reportAnimationComplete) {
++          void reportAnimationComplete(animate);
++        }
++        requestAnimationFrame(() => {
++          if (animationGenerationRef.current !== animationGeneration) {
++            return;
++          }
++          applyAnimateTransitionEnd();
++        });
++      } else if (completionPromises.length > 0 && animate !== undefined) {
++        void Promise.all(completionPromises).then(() => {
++          if (animationGenerationRef.current !== animationGeneration) {
++            return;
++          }
++          applyAnimateTransitionEnd();
++          if (onAnimationComplete) {
++            void runOnBackground(onAnimationComplete)(animate);
++          }
++        });
++      }
++    }
++
++    void runOnMainThread(updateMotionStyles)(
++      resolvedAnimate.target,
++      resolvedTap.target,
++      resolvedHover.target,
++      resolvedAnimate.transitionEnd,
++      workletAnimateTransition,
++      initialValues,
++      removedAnimateFallbackValues,
++      inheritsAnimate,
++      shouldAnimateTarget,
++    );
++
++    function stopMotionStyles() {
++      'main thread';
++      animationGenerationRef.current += 1;
++      for (const animation of animationRef.current) {
++        animation.stop();
++      }
++      animationRef.current = [];
++      for (const animation of interactionAnimationRef.current) {
++        animation.stop();
++      }
++      interactionAnimationRef.current = [];
++      for (const key in interactionAnimationValueKeysRef.current) {
++        (generatedValuesRef.current[key] ?? motionValueBindings[key])?.stop();
++      }
++      interactionAnimationValueKeysRef.current = {};
++      interactionAnimationGenerationRef.current += 1;
++      styleCleanupRef.current?.();
++      styleCleanupRef.current = null;
++    }
++
++    return () => {
++      void runOnMainThread(stopMotionStyles)();
++    };
++    // Serialized targets and value IDs avoid restarting unchanged inline
++    // definitions while keeping animate and style transforms in one renderer.
++  }, [animationKey, styleKey]);
++
++  function startTapAnimation(event: MainThread.TouchEvent) {
++    'main thread';
++    if (!resolvedTap.target) {
++      return;
++    }
++    const isLynxForWeb = typeof SystemInfo !== 'undefined'
++      && String(SystemInfo.platform) === 'web';
++    tapActiveRef.current = true;
++    for (const animation of animationRef.current) {
++      animation.stop();
++    }
++    animationRef.current = [];
++    for (const animation of interactionAnimationRef.current) {
++      animation.stop();
++    }
++    interactionAnimationRef.current = [];
++    for (const key in interactionAnimationValueKeysRef.current) {
++      (generatedValuesRef.current[key] ?? motionValues[key])?.stop();
++    }
++    interactionAnimationValueKeysRef.current = {};
++    const animationGeneration = interactionAnimationGenerationRef.current + 1;
++    interactionAnimationGenerationRef.current = animationGeneration;
++    // Bind while the tap-start worklet is still executing on MTS; Motion calls
++    // the returned dispatcher later from its animation scheduler.
++    const reportAnimationComplete = onAnimationComplete
++      ? runOnBackground(onAnimationComplete)
++      : undefined;
++    function applyTapTransitionEnd() {
++      const transitionEnd = resolvedTap.transitionEnd;
++      if (!transitionEnd) {
++        return;
++      }
++      let addedValue = false;
++      for (const key in transitionEnd) {
++        const finalValue = transitionEnd[key];
++        let value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (!value && finalValue !== undefined) {
++          value = motionValue(finalValue as string | number);
++          generatedValuesRef.current[key] = value;
++          addedValue = true;
++        } else if (value && finalValue !== undefined) {
++          value.set(finalValue as never);
++        }
++      }
++      if (addedValue && elementRef.current) {
++        const ElementConstructor = globalThis.Element as unknown as new(
++          element: MainThread.Element,
++        ) => Element;
++        styleCleanupRef.current?.();
++        styleCleanupRef.current = styleEffect(
++          new ElementConstructor(elementRef.current),
++          { ...motionValues, ...generatedValuesRef.current },
++        );
++      }
++    }
++    const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
++    let startedAnimationCount = 0;
++    let completeTapWithoutAnimation: (() => void) | undefined;
++    const resolvedTransition = (workletTapTransition?.repeat === -1
++      ? { ...workletTapTransition, repeat: Number.POSITIVE_INFINITY }
++      : workletTapTransition) ?? {};
++    // Keep animation handles out of the MTS snapshot captured by a ReactLynx
++    // rerender triggered from lifecycle callbacks.
++    if (
++      Object.keys(resolvedTap.target).length === 0
++      && resolvedTap.transitionEnd
++      && Object.keys(resolvedTap.transitionEnd).length > 0
++    ) {
++      startedAnimationCount = 1;
++      completeTapWithoutAnimation = () => {
++        if (reportAnimationComplete) {
++          void reportAnimationComplete(whileTap!);
++        }
++        requestAnimationFrame(() => {
++          if (
++            interactionAnimationGenerationRef.current === animationGeneration
++          ) {
++            applyTapTransitionEnd();
++          }
++        });
++      };
++    } else if (isLynxForWeb || !event.currentTarget) {
++      const targetValues = resolvedTap.target as Record<string, unknown>;
++      let pendingAnimationCount = 0;
++      function reportTapAnimationComplete(definition: MotionDefinition) {
++        if (interactionAnimationGenerationRef.current !== animationGeneration) {
++          return;
++        }
++        interactionAnimationCompletionRef.current.pending -= 1;
++        if (
++          interactionAnimationCompletionRef.current.generation
++            === animationGeneration
++          && interactionAnimationCompletionRef.current.pending === 0
++        ) {
++          applyTapTransitionEnd();
++          if (reportAnimationComplete) {
++            void reportAnimationComplete(definition);
++          }
++        }
++      }
++      for (const key in targetValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value && targetValues[key] !== undefined) {
++          pendingAnimationCount += 1;
++        }
++      }
++      interactionAnimationCompletionRef.current = {
++        generation: animationGeneration,
++        pending: pendingAnimationCount,
++      };
++      startedAnimationCount = pendingAnimationCount;
++      for (const key in targetValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        const targetValue = targetValues[key];
++        if (value && targetValue !== undefined) {
++          const startAnimation = createMotionValueAnimation(
++            key,
++            value,
++            targetValue as never,
++            resolvedTransition as never,
++          );
++          void value.start(complete =>
++            startAnimation(() => {
++              complete();
++              reportTapAnimationComplete(whileTap!);
++            })
++          );
++          if (value.animation) {
++            Object.defineProperty(value, 'animation', { enumerable: false });
++          }
++          if (isLynxForWeb) {
++            interactionAnimationValueKeysRef.current[key] = true;
++          } else if (value.animation) {
++            interactionAnimationRef.current.push(value.animation);
++          }
++        }
++      }
++    } else {
++      const ElementConstructor = globalThis.Element as unknown as new(
++        element: MainThread.Element,
++      ) => Element;
++      const element = new ElementConstructor(event.currentTarget);
++      const animation = animateMotionTarget(
++        element,
++        resolvedTap.target,
++        {
++          ...resolvedTransition,
++          onComplete: () => {
++            if (
++              interactionAnimationGenerationRef.current === animationGeneration
++            ) {
++              applyTapTransitionEnd();
++              if (reportAnimationComplete) {
++                void reportAnimationComplete(whileTap!);
++              }
++            }
++          },
++        },
++      );
++      interactionAnimationRef.current.push(animation);
++      startedAnimationCount = 1;
++    }
++    if (startedAnimationCount > 0 && onAnimationStart) {
++      void runOnBackground(onAnimationStart)(whileTap!);
++    }
++    if (completeTapWithoutAnimation) {
++      completeTapWithoutAnimation();
++    }
++  }
++
++  function endTapAnimation(event: MainThread.TouchEvent) {
++    'main thread';
++    if (!resolvedTap.target) {
++      return;
++    }
++    const isLynxForWeb = typeof SystemInfo !== 'undefined'
++      && String(SystemInfo.platform) === 'web';
++    tapActiveRef.current = false;
++    for (const animation of interactionAnimationRef.current) {
++      animation.stop();
++    }
++    interactionAnimationRef.current = [];
++    for (const key in interactionAnimationValueKeysRef.current) {
++      (generatedValuesRef.current[key] ?? motionValues[key])?.stop();
++    }
++    interactionAnimationValueKeysRef.current = {};
++    const animationGeneration = interactionAnimationGenerationRef.current + 1;
++    interactionAnimationGenerationRef.current = animationGeneration;
++    // Bind while the tap-end worklet is still executing on MTS; restoration
++    // completion arrives later from Motion's animation scheduler.
++    const reportAnimationComplete = onAnimationComplete
++      ? runOnBackground(onAnimationComplete)
++      : undefined;
++    const targetValues = {
++      ...resolvedTap.target,
++      ...resolvedTap.transitionEnd,
++    } as Record<string, unknown>;
++    const restingTarget = hoverActiveRef.current && resolvedHover.target
++      ? resolvedHover.target
++      : resolvedAnimate.target;
++    const animateValues = restingTarget as
++      | Record<string, unknown>
++      | undefined;
++    const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
++    let startedAnimationCount = 0;
++    const restingTransition = hoverActiveRef.current && resolvedHover.target
++      ? workletHoverTransition
++      : (resolvedAnimate.target
++        ? workletAnimateTransition
++        : workletInitialTransition);
++    const resolvedTransition = (restingTransition?.repeat === -1
++      ? { ...restingTransition, repeat: Number.POSITIVE_INFINITY }
++      : restingTransition) ?? {};
++    const restingValues: Record<string, unknown> = {};
++    for (const key in targetValues) {
++      let restingValue = animateValues?.[key] ?? initialValues[key];
++      if (Array.isArray(restingValue)) {
++        const keyframes = restingValue as unknown[];
++        for (let index = keyframes.length - 1; index >= 0; index--) {
++          if (keyframes[index] !== null && keyframes[index] !== undefined) {
++            restingValue = keyframes[index];
++            break;
++          }
++        }
++      }
++      if (restingValue === undefined) {
++        restingValue = key.startsWith('scale') || key === 'opacity' ? 1 : 0;
++      }
++      if (restingValue !== undefined) {
++        restingValues[key] = restingValue;
++      }
++    }
++    const restingDefinition: MotionDefinition = hoverActiveRef.current
++        && whileHover !== undefined
++      ? whileHover
++      : animate ?? (restingValues as MotionTarget);
++    if (isLynxForWeb || !event.currentTarget) {
++      let pendingAnimationCount = 0;
++      function reportTapAnimationComplete() {
++        if (interactionAnimationGenerationRef.current !== animationGeneration) {
++          return;
++        }
++        interactionAnimationCompletionRef.current.pending -= 1;
++        if (
++          interactionAnimationCompletionRef.current.generation
++            === animationGeneration
++          && interactionAnimationCompletionRef.current.pending === 0
++          && reportAnimationComplete
++        ) {
++          void reportAnimationComplete(restingDefinition);
++        }
++      }
++      for (const key in restingValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value) {
++          pendingAnimationCount += 1;
++        }
++      }
++      interactionAnimationCompletionRef.current = {
++        generation: animationGeneration,
++        pending: pendingAnimationCount,
++      };
++      startedAnimationCount = pendingAnimationCount;
++      for (const key in restingValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value) {
++          const startAnimation = createMotionValueAnimation(
++            key,
++            value,
++            restingValues[key] as never,
++            resolvedTransition as never,
++          );
++          void value.start(complete =>
++            startAnimation(() => {
++              complete();
++              reportTapAnimationComplete();
++            })
++          );
++          if (value.animation) {
++            Object.defineProperty(value, 'animation', { enumerable: false });
++          }
++          if (isLynxForWeb) {
++            interactionAnimationValueKeysRef.current[key] = true;
++          } else if (value.animation) {
++            interactionAnimationRef.current.push(value.animation);
++          }
++        }
++      }
++    } else {
++      const ElementConstructor = globalThis.Element as unknown as new(
++        element: MainThread.Element,
++      ) => Element;
++      const element = new ElementConstructor(event.currentTarget);
++      const animation = animateMotionTarget(
++        element,
++        restingValues,
++        {
++          ...resolvedTransition,
++          onComplete: () => {
++            if (
++              interactionAnimationGenerationRef.current === animationGeneration
++              && reportAnimationComplete
++            ) {
++              void reportAnimationComplete(restingDefinition);
++            }
++          },
++        },
++      );
++      interactionAnimationRef.current.push(animation);
++      startedAnimationCount = 1;
++    }
++    if (startedAnimationCount > 0 && onAnimationStart) {
++      void runOnBackground(onAnimationStart)(restingDefinition);
++    }
++  }
++
++  function startHoverAnimation() {
++    'main thread';
++    if (!resolvedHover.target || !elementRef.current) {
++      return;
++    }
++    hoverActiveRef.current = true;
++    if (tapActiveRef.current) {
++      return;
++    }
++    const animationGeneration = interactionAnimationGenerationRef.current + 1;
++    interactionAnimationGenerationRef.current = animationGeneration;
++    for (const animation of animationRef.current) {
++      animation.stop();
++    }
++    animationRef.current = [];
++    for (const animation of interactionAnimationRef.current) {
++      animation.stop();
++    }
++    interactionAnimationRef.current = [];
++    for (const key in interactionAnimationValueKeysRef.current) {
++      (generatedValuesRef.current[key] ?? motionValues[key])?.stop();
++    }
++    interactionAnimationValueKeysRef.current = {};
++    const reportAnimationComplete = onAnimationComplete
++      ? runOnBackground(onAnimationComplete)
++      : undefined;
++    function applyHoverTransitionEnd() {
++      const transitionEnd = resolvedHover.transitionEnd;
++      if (!transitionEnd) {
++        return;
++      }
++      let addedValue = false;
++      for (const key in transitionEnd) {
++        const finalValue = transitionEnd[key];
++        let value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (!value && finalValue !== undefined) {
++          value = motionValue(finalValue as string | number);
++          generatedValuesRef.current[key] = value;
++          addedValue = true;
++        } else if (value && finalValue !== undefined) {
++          value.set(finalValue as never);
++        }
++      }
++      if (addedValue && elementRef.current) {
++        const ElementConstructor = globalThis.Element as unknown as new(
++          element: MainThread.Element,
++        ) => Element;
++        styleCleanupRef.current?.();
++        styleCleanupRef.current = styleEffect(
++          new ElementConstructor(elementRef.current),
++          { ...motionValues, ...generatedValuesRef.current },
++        );
++      }
++    }
++    const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
++    let startedAnimationCount = 0;
++    let completeHoverWithoutAnimation: (() => void) | undefined;
++    const resolvedTransition = (workletHoverTransition?.repeat === -1
++      ? { ...workletHoverTransition, repeat: Number.POSITIVE_INFINITY }
++      : workletHoverTransition) ?? {};
++    const isLynxForWeb = typeof SystemInfo !== 'undefined'
++      && String(SystemInfo.platform) === 'web';
++    if (
++      Object.keys(resolvedHover.target).length === 0
++      && resolvedHover.transitionEnd
++      && Object.keys(resolvedHover.transitionEnd).length > 0
++    ) {
++      startedAnimationCount = 1;
++      completeHoverWithoutAnimation = () => {
++        if (reportAnimationComplete) {
++          void reportAnimationComplete(whileHover!);
++        }
++        requestAnimationFrame(() => {
++          if (
++            interactionAnimationGenerationRef.current === animationGeneration
++          ) {
++            applyHoverTransitionEnd();
++          }
++        });
++      };
++    } else if (isLynxForWeb) {
++      const targetValues = resolvedHover.target as Record<string, unknown>;
++      let pendingAnimationCount = 0;
++      function reportHoverAnimationComplete() {
++        if (
++          interactionAnimationGenerationRef.current !== animationGeneration
++        ) {
++          return;
++        }
++        interactionAnimationCompletionRef.current.pending -= 1;
++        if (
++          interactionAnimationCompletionRef.current.generation
++            === animationGeneration
++          && interactionAnimationCompletionRef.current.pending === 0
++        ) {
++          applyHoverTransitionEnd();
++          if (reportAnimationComplete) {
++            void reportAnimationComplete(whileHover!);
++          }
++        }
++      }
++      for (const key in targetValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value && targetValues[key] !== undefined) {
++          pendingAnimationCount += 1;
++        }
++      }
++      interactionAnimationCompletionRef.current = {
++        generation: animationGeneration,
++        pending: pendingAnimationCount,
++      };
++      startedAnimationCount = pendingAnimationCount;
++      for (const key in targetValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        const targetValue = targetValues[key];
++        if (value && targetValue !== undefined) {
++          const startAnimation = createMotionValueAnimation(
++            key,
++            value,
++            targetValue as never,
++            resolvedTransition as never,
++          );
++          void value.start(complete =>
++            startAnimation(() => {
++              complete();
++              reportHoverAnimationComplete();
++            })
++          );
++          if (value.animation) {
++            Object.defineProperty(value, 'animation', { enumerable: false });
++          }
++          interactionAnimationValueKeysRef.current[key] = true;
++        }
++      }
++    } else {
++      const ElementConstructor = globalThis.Element as unknown as new(
++        element: MainThread.Element,
++      ) => Element;
++      const element = new ElementConstructor(elementRef.current);
++      interactionAnimationRef.current.push(animateMotionTarget(
++        element,
++        resolvedHover.target,
++        {
++          ...resolvedTransition,
++          onComplete: () => {
++            if (
++              interactionAnimationGenerationRef.current === animationGeneration
++            ) {
++              applyHoverTransitionEnd();
++              if (reportAnimationComplete) {
++                void reportAnimationComplete(whileHover!);
++              }
++            }
++          },
++        },
++      ));
++      startedAnimationCount = 1;
++    }
++    if (startedAnimationCount > 0 && onAnimationStart) {
++      void runOnBackground(onAnimationStart)(whileHover!);
++    }
++    if (completeHoverWithoutAnimation) {
++      completeHoverWithoutAnimation();
++    }
++  }
++
++  function endHoverAnimation() {
++    'main thread';
++    if (!resolvedHover.target || !elementRef.current) {
++      return;
++    }
++    hoverActiveRef.current = false;
++    if (tapActiveRef.current) {
++      return;
++    }
++    const animationGeneration = interactionAnimationGenerationRef.current + 1;
++    interactionAnimationGenerationRef.current = animationGeneration;
++    for (const animation of interactionAnimationRef.current) {
++      animation.stop();
++    }
++    interactionAnimationRef.current = [];
++    for (const key in interactionAnimationValueKeysRef.current) {
++      (generatedValuesRef.current[key] ?? motionValues[key])?.stop();
++    }
++    interactionAnimationValueKeysRef.current = {};
++    const reportAnimationComplete = onAnimationComplete
++      ? runOnBackground(onAnimationComplete)
++      : undefined;
++    const hoverValues = {
++      ...resolvedHover.target,
++      ...resolvedHover.transitionEnd,
++    } as Record<string, unknown>;
++    const animateValues = resolvedAnimate.target as
++      | Record<string, unknown>
++      | undefined;
++    const animateMotionTarget = animateValue as unknown as AnimateMotionTarget;
++    let startedAnimationCount = 0;
++    const restingTransition = resolvedAnimate.target
++      ? workletAnimateTransition
++      : workletInitialTransition;
++    const resolvedTransition = (restingTransition?.repeat === -1
++      ? { ...restingTransition, repeat: Number.POSITIVE_INFINITY }
++      : restingTransition) ?? {};
++    const restingValues: Record<string, unknown> = {};
++    for (const key in hoverValues) {
++      let restingValue = animateValues?.[key] ?? initialValues[key];
++      if (Array.isArray(restingValue)) {
++        const keyframes = restingValue as unknown[];
++        for (let index = keyframes.length - 1; index >= 0; index--) {
++          if (keyframes[index] !== null && keyframes[index] !== undefined) {
++            restingValue = keyframes[index];
++            break;
++          }
++        }
++      }
++      if (restingValue === undefined) {
++        restingValue = key.startsWith('scale') || key === 'opacity' ? 1 : 0;
++      }
++      restingValues[key] = restingValue;
++    }
++    const isLynxForWeb = typeof SystemInfo !== 'undefined'
++      && String(SystemInfo.platform) === 'web';
++    const restingDefinition: MotionDefinition = animate
++      ?? (restingValues as MotionTarget);
++    if (isLynxForWeb) {
++      let pendingAnimationCount = 0;
++      function reportHoverAnimationComplete() {
++        if (
++          interactionAnimationGenerationRef.current !== animationGeneration
++        ) {
++          return;
++        }
++        interactionAnimationCompletionRef.current.pending -= 1;
++        if (
++          interactionAnimationCompletionRef.current.generation
++            === animationGeneration
++          && interactionAnimationCompletionRef.current.pending === 0
++          && reportAnimationComplete
++        ) {
++          void reportAnimationComplete(restingDefinition);
++        }
++      }
++      for (const key in restingValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value) {
++          pendingAnimationCount += 1;
++        }
++      }
++      interactionAnimationCompletionRef.current = {
++        generation: animationGeneration,
++        pending: pendingAnimationCount,
++      };
++      startedAnimationCount = pendingAnimationCount;
++      for (const key in restingValues) {
++        const value = generatedValuesRef.current[key] ?? motionValues[key];
++        if (value) {
++          const startAnimation = createMotionValueAnimation(
++            key,
++            value,
++            restingValues[key] as never,
++            resolvedTransition as never,
++          );
++          void value.start(complete =>
++            startAnimation(() => {
++              complete();
++              reportHoverAnimationComplete();
++            })
++          );
++          if (value.animation) {
++            Object.defineProperty(value, 'animation', { enumerable: false });
++          }
++          interactionAnimationValueKeysRef.current[key] = true;
++        }
++      }
++    } else {
++      const ElementConstructor = globalThis.Element as unknown as new(
++        element: MainThread.Element,
++      ) => Element;
++      const element = new ElementConstructor(elementRef.current);
++      interactionAnimationRef.current.push(animateMotionTarget(
++        element,
++        restingValues,
++        {
++          ...resolvedTransition,
++          onComplete: () => {
++            if (
++              interactionAnimationGenerationRef.current === animationGeneration
++              && reportAnimationComplete
++            ) {
++              void reportAnimationComplete(restingDefinition);
++            }
++          },
++        },
++      ));
++      startedAnimationCount = 1;
++    }
++    if (startedAnimationCount > 0 && onAnimationStart) {
++      void runOnBackground(onAnimationStart)(restingDefinition);
++    }
++  }
++
++  return {
++    ...hostProps,
++    style: initialStyle,
++    'main-thread:ref': elementRef,
++    ...(bindTouchStart ? { bindtouchstart: bindTouchStart } : {}),
++    ...(bindTouchEnd ? { bindtouchend: bindTouchEnd } : {}),
++    ...(bindTouchCancel ? { bindtouchcancel: bindTouchCancel } : {}),
++    ...(bindLayoutChange ? { bindlayoutchange: bindLayoutChange } : {}),
++    ...(bindGlobalMouseMove
++      ? { 'global-bindmousemove': bindGlobalMouseMove }
++      : {}),
++    ...(resolvedTap.target
++      ? {
++        'main-thread:bindtouchstart': startTapAnimation,
++        'main-thread:bindtouchend': endTapAnimation,
++        'main-thread:bindtouchcancel': endTapAnimation,
++      }
++      : {}),
++  };
++}
++
++const MotionView: FunctionComponent<MotionViewProps> = (props) => {
++  const inherited = useInheritedMotionProps(props);
++  const hostProps = useMotionHostProps(
++    inherited.props,
++    inherited.delay,
++    inherited.resolvedAnimateDefinition,
++    inherited.inheritsAnimate,
++  );
++  const { children, ...elementProps } = hostProps;
++  if (!shouldProvideVariantContext(props, inherited.context, children)) {
++    return createElement('view', hostProps as IntrinsicElements['view']);
++  }
++  return createElement(
++    'view',
++    elementProps as IntrinsicElements['view'],
++    createElement(MotionVariantContext.Provider, {
++      value: variantContextValue(props, inherited.context),
++      children: children as ReactNode,
++    }),
++  );
++};
++
++const MotionText: FunctionComponent<MotionTextProps> = (props) => {
++  const inherited = useInheritedMotionProps(props);
++  const hostProps = useMotionHostProps(
++    inherited.props,
++    inherited.delay,
++    inherited.resolvedAnimateDefinition,
++    inherited.inheritsAnimate,
++  );
++  const { children, ...elementProps } = hostProps;
++  if (!shouldProvideVariantContext(props, inherited.context, children)) {
++    return createElement('text', hostProps as IntrinsicElements['text']);
++  }
++  return createElement(
++    'text',
++    elementProps as IntrinsicElements['text'],
++    createElement(MotionVariantContext.Provider, {
++      value: variantContextValue(props, inherited.context),
++      children: children as ReactNode,
++    }),
++  );
++};
++
++const MotionImage: FunctionComponent<MotionImageProps> = (props) => {
++  const inherited = useInheritedMotionProps(props);
++  const hostProps = useMotionHostProps(
++    inherited.props,
++    inherited.delay,
++    inherited.resolvedAnimateDefinition,
++    inherited.inheritsAnimate,
++  );
++  const { children, ...elementProps } = hostProps;
++  if (!shouldProvideVariantContext(props, inherited.context, children)) {
++    return createElement('image', hostProps as IntrinsicElements['image']);
++  }
++  return createElement(
++    'image',
++    elementProps as IntrinsicElements['image'],
++    createElement(MotionVariantContext.Provider, {
++      value: variantContextValue(props, inherited.context),
++      children: children as ReactNode,
++    }),
++  );
++};
++
++function createMotionComponent<Props extends { style?: unknown }>(
++  Component: ComponentType<Props>,
++): FunctionComponent<MotionComponentProps<Props>> {
++  const MotionComponent: FunctionComponent<MotionComponentProps<Props>> = (
++    props,
++  ) => {
++    const inherited = useInheritedMotionProps(props);
++    const hostProps = useMotionHostProps(
++      inherited.props,
++      inherited.delay,
++      inherited.resolvedAnimateDefinition,
++      inherited.inheritsAnimate,
++    );
++    const { children, ...componentProps } = hostProps;
++    if (!shouldProvideVariantContext(props, inherited.context, children)) {
++      return createElement(Component, hostProps as unknown as Props);
++    }
++    return createElement(
++      Component,
++      componentProps as unknown as Props,
++      createElement(MotionVariantContext.Provider, {
++        value: variantContextValue(props, inherited.context),
++        children: children as ReactNode,
++      }),
++    );
++  };
++  return MotionComponent;
++}
++
++export const motion: MotionFactory = {
++  view: MotionView,
++  text: MotionText,
++  image: MotionImage,
++  create: createMotionComponent,
++};
+diff --git a/packages/motion/src/declarative/style.ts b/packages/motion/src/declarative/style.ts
+new file mode 100644
+index 000000000..e9ae7ac8a
+--- /dev/null
++++ b/packages/motion/src/declarative/style.ts
+@@ -0,0 +1,273 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import type { MotionValue } from 'motion-dom';
++
++import type { CSSProperties } from '@lynx-js/types';
++
++import type {
++  MotionDefinition,
++  MotionStyle,
++  MotionStyleValue,
++  MotionTarget,
++  MotionTransition,
++  MotionVariants,
++} from './types.js';
++import {
++  getMotionValueHandleInitialValue,
++  isMotionValueHandle,
++} from '../hooks/useMotionValue.js';
++
++const transformAliases: Record<string, string> = {
++  x: 'translateX',
++  y: 'translateY',
++  z: 'translateZ',
++  transformPerspective: 'perspective',
++};
++
++const transformKeys = new Set([
++  'transformPerspective',
++  'x',
++  'y',
++  'z',
++  'translateX',
++  'translateY',
++  'translateZ',
++  'scale',
++  'scaleX',
++  'scaleY',
++  'scaleZ',
++  'rotate',
++  'rotateX',
++  'rotateY',
++  'rotateZ',
++  'skew',
++  'skewX',
++  'skewY',
++]);
++
++function resolveStyleValue(
++  value: unknown,
++  useFinalKeyframe = false,
++): unknown {
++  if (isMotionValueHandle(value)) {
++    return getMotionValueHandleInitialValue(value);
++  }
++  if (Array.isArray(value)) {
++    if (useFinalKeyframe) {
++      for (let index = value.length - 1; index >= 0; index--) {
++        if (value[index] !== null && value[index] !== undefined) {
++          return value[index];
++        }
++      }
++      return undefined;
++    }
++    return value.find(item => item !== null && item !== undefined);
++  }
++  return value;
++}
++
++function formatTransformValue(key: string, value: string | number): string {
++  if (typeof value === 'string') {
++    return value;
++  }
++  if (key.startsWith('scale')) {
++    return String(value);
++  }
++  if (key.startsWith('rotate') || key.startsWith('skew')) {
++    return `${value}deg`;
++  }
++  return `${value}px`;
++}
++
++function formatTransformOriginValue(
++  key: 'originX' | 'originY' | 'originZ',
++  value: string | number,
++): string {
++  if (typeof value === 'string') {
++    return value;
++  }
++  return key === 'originZ' ? `${value}px` : `${value * 100}%`;
++}
++
++function appendResolvedValues(
++  output: Record<string, unknown>,
++  transforms: Record<string, string | number>,
++  values: Record<string, unknown>,
++  useFinalKeyframe = false,
++): void {
++  for (const key in values) {
++    const value = resolveStyleValue(values[key], useFinalKeyframe);
++    if (value === undefined || value === null) {
++      continue;
++    }
++    if (
++      transformKeys.has(key)
++      && (typeof value === 'string' || typeof value === 'number')
++    ) {
++      transforms[key] = value;
++    } else {
++      output[key] = value;
++    }
++  }
++}
++
++export function resolveInitialStyle(
++  style: MotionStyle | string | undefined,
++  initial: MotionTarget | false | undefined,
++  animate?: MotionTarget,
++): CSSProperties | string | undefined {
++  if (typeof style === 'string') {
++    return style;
++  }
++
++  const output: Record<string, unknown> = {};
++  const transforms: Record<string, string | number> = {};
++  const transformOrigin: Partial<
++    Record<'originX' | 'originY' | 'originZ', string | number>
++  > = {};
++  const appendInitialValues = (
++    values: Record<string, unknown>,
++    useFinalKeyframe = false,
++  ) => {
++    const { originX, originY, originZ, ...rest } = values;
++    appendResolvedValues(output, transforms, rest, useFinalKeyframe);
++    for (const [key, value] of Object.entries({ originX, originY, originZ })) {
++      const resolvedValue = resolveStyleValue(value, useFinalKeyframe);
++      if (
++        typeof resolvedValue === 'string'
++        || typeof resolvedValue === 'number'
++      ) {
++        transformOrigin[key as keyof typeof transformOrigin] = resolvedValue;
++      }
++    }
++  };
++  appendInitialValues((style ?? {}) as Record<string, unknown>);
++  if (initial === false) {
++    appendInitialValues((animate ?? {}) as Record<string, unknown>, true);
++  } else {
++    appendInitialValues((initial ?? {}) as Record<string, unknown>);
++  }
++
++  const generatedTransform = Object.entries(transforms)
++    .map(([key, value]) => {
++      const name = transformAliases[key] ?? key;
++      return `${name}(${formatTransformValue(key, value)})`;
++    })
++    .join(' ');
++  if (generatedTransform) {
++    const existingTransform = output['transform'];
++    output['transform'] = typeof existingTransform === 'string'
++      ? `${existingTransform} ${generatedTransform}`
++      : generatedTransform;
++  }
++  if (Object.keys(transformOrigin).length > 0) {
++    const originX = transformOrigin.originX ?? '50%';
++    const originY = transformOrigin.originY ?? '50%';
++    const originZ = transformOrigin.originZ ?? '0';
++    output['transformOrigin'] = [
++      formatTransformOriginValue('originX', originX),
++      formatTransformOriginValue('originY', originY),
++      formatTransformOriginValue('originZ', originZ),
++    ].join(' ');
++  }
++
++  return Object.keys(output).length > 0 ? output as CSSProperties : undefined;
++}
++
++export function resolveInitialValues(
++  style: MotionStyle | string | undefined,
++  initial: MotionTarget | false | undefined,
++  animate?: MotionTarget,
++): Record<string, unknown> {
++  const values: Record<string, unknown> = {};
++  if (style && typeof style !== 'string') {
++    for (const key in style) {
++      values[key] = resolveStyleValue(style[key as keyof MotionStyle]);
++    }
++  }
++  if (initial === false && animate) {
++    const animateValues = animate as Record<string, unknown>;
++    for (const key in animateValues) {
++      values[key] = resolveStyleValue(animateValues[key], true);
++    }
++  } else if (initial) {
++    const initialValues = initial as Record<string, unknown>;
++    for (const key in initialValues) {
++      values[key] = resolveStyleValue(initialValues[key]);
++    }
++  }
++  return values;
++}
++
++export function collectMotionValues(
++  style: MotionStyle | string | undefined,
++): Record<string, MotionValue<string | number>> {
++  if (!style || typeof style === 'string') {
++    return {};
++  }
++
++  const values: Record<string, MotionValue<string | number>> = {};
++  for (const key in style) {
++    const value = style[key as keyof MotionStyle] as MotionStyleValue;
++    if (isMotionValueHandle(value)) {
++      values[key] = value as MotionValue<string | number>;
++    }
++  }
++  return values;
++}
++
++export function motionDefinitionKey(value: unknown): string {
++  return JSON.stringify(value) ?? '';
++}
++
++export function resolveMotionDefinition(
++  definition: MotionDefinition | false | undefined,
++  variants: MotionVariants | undefined,
++  custom: unknown,
++): MotionTarget | false | undefined {
++  if (definition === false || definition === undefined) {
++    return definition;
++  }
++  if (typeof definition !== 'string' && !Array.isArray(definition)) {
++    return definition;
++  }
++
++  const labels = Array.isArray(definition) ? definition : [definition];
++  const resolved: MotionTarget = {};
++  for (const label of labels) {
++    const variant = variants?.[label];
++    if (!variant) {
++      continue;
++    }
++    Object.assign(
++      resolved,
++      typeof variant === 'function' ? variant(custom) : variant,
++    );
++  }
++  return resolved;
++}
++
++export function splitMotionTarget(
++  definition: MotionTarget | false | undefined,
++  fallbackTransition: MotionTransition | undefined,
++): {
++  target: MotionTarget | undefined;
++  transition: MotionTransition | undefined;
++  transitionEnd: Record<string, unknown> | undefined;
++} {
++  if (!definition) {
++    return {
++      target: undefined,
++      transition: fallbackTransition,
++      transitionEnd: undefined,
++    };
++  }
++  const { transition, transitionEnd, ...target } = definition;
++  return {
++    target: target as MotionTarget,
++    transition: transition ?? fallbackTransition,
++    transitionEnd,
++  };
++}
+diff --git a/packages/motion/src/declarative/types.ts b/packages/motion/src/declarative/types.ts
+new file mode 100644
+index 000000000..787207de0
+--- /dev/null
++++ b/packages/motion/src/declarative/types.ts
+@@ -0,0 +1,122 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import type {
++  AnimationOptions,
++  DOMKeyframesDefinition,
++  MotionValue,
++  ResolvedValues,
++} from 'motion-dom';
++
++import type { ComponentType, FunctionComponent } from '@lynx-js/react';
++import type { CSSProperties, IntrinsicElements } from '@lynx-js/types';
++
++export type MotionStyleValue =
++  | string
++  | number
++  | MotionValue<string>
++  | MotionValue<number>
++  | null
++  | undefined;
++
++/** Styles accepted by declarative Motion components. */
++export type MotionStyle =
++  & {
++    [Key in keyof CSSProperties]?:
++      | CSSProperties[Key]
++      | MotionValue<string>
++      | MotionValue<number>;
++  }
++  & Partial<Record<`--${string}`, MotionStyleValue>>
++  & {
++    x?: MotionStyleValue;
++    y?: MotionStyleValue;
++    z?: MotionStyleValue;
++    scale?: MotionStyleValue;
++    scaleX?: MotionStyleValue;
++    scaleY?: MotionStyleValue;
++    rotate?: MotionStyleValue;
++    rotateX?: MotionStyleValue;
++    rotateY?: MotionStyleValue;
++    rotateZ?: MotionStyleValue;
++  };
++
++/** Transition options passed to Motion's animation engine. */
++export type MotionTransition = AnimationOptions;
++
++/** Animatable style target for a declarative Motion component. */
++export type MotionTarget = DOMKeyframesDefinition & {
++  transition?: MotionTransition;
++  transitionEnd?: ResolvedValues;
++};
++
++/** A named declarative target or a list of targets merged left-to-right. */
++export type MotionDefinition = MotionTarget | string | string[];
++
++/** A named target table. Function variants are resolved on the background thread. */
++export type MotionVariants = Record<
++  string,
++  MotionTarget | ((custom: unknown) => MotionTarget)
++>;
++
++/** Pointer coordinates reported to declarative tap callbacks. */
++export interface MotionTapInfo {
++  point: { x: number; y: number };
++}
++
++/** Motion-specific props shared by all declarative Motion components. */
++export interface MotionProps {
++  /** Values rendered before the first animation starts. */
++  initial?: MotionDefinition | false;
++  /** Values animated whenever this target changes. */
++  animate?: MotionDefinition;
++  /** Whether parent variant labels propagate through this component. */
++  inherit?: boolean;
++  /** Values animated while the element is being pressed. */
++  whileTap?: MotionDefinition;
++  /** Values animated while a mouse-capable client hovers the element. */
++  whileHover?: MotionDefinition;
++  /** Called when a press starts. */
++  onTapStart?: (event: unknown, info: MotionTapInfo) => void;
++  /** Called when a press ends successfully. */
++  onTap?: (event: unknown, info: MotionTapInfo) => void;
++  /** Called when a press is cancelled. */
++  onTapCancel?: (event: unknown, info: MotionTapInfo) => void;
++  /** Called when hover starts on a mouse-capable client. */
++  onHoverStart?: (event: unknown) => void;
++  /** Called when hover ends on a mouse-capable client. */
++  onHoverEnd?: (event: unknown) => void;
++  /** Called when a declarative target starts animating. */
++  onAnimationStart?: (definition: MotionDefinition) => void;
++  /** Called after a declarative target finishes animating. */
++  onAnimationComplete?: (definition: MotionDefinition) => void;
++  /** Named targets referenced by declarative definition props. */
++  variants?: MotionVariants;
++  /** Value passed to function variants. */
++  custom?: unknown;
++  /** Options used when animating to `animate`. */
++  transition?: MotionTransition;
++  /** Static styles and live MotionValue bindings. */
++  style?: MotionStyle | string;
++}
++
++export type MotionComponentProps<Props> =
++  & Omit<
++    Props,
++    keyof MotionProps | 'main-thread:ref'
++  >
++  & MotionProps;
++
++export type MotionViewProps = MotionComponentProps<IntrinsicElements['view']>;
++export type MotionTextProps = MotionComponentProps<IntrinsicElements['text']>;
++export type MotionImageProps = MotionComponentProps<IntrinsicElements['image']>;
++
++export interface MotionFactory {
++  view: FunctionComponent<MotionViewProps>;
++  text: FunctionComponent<MotionTextProps>;
++  image: FunctionComponent<MotionImageProps>;
++  create<Props extends { style?: unknown }>(
++    Component: ComponentType<Props>,
++  ): FunctionComponent<MotionComponentProps<Props>>;
++}
+diff --git a/packages/motion/src/hooks/useMotionValue.ts b/packages/motion/src/hooks/useMotionValue.ts
+new file mode 100644
+index 000000000..7cc26e652
+--- /dev/null
++++ b/packages/motion/src/hooks/useMotionValue.ts
+@@ -0,0 +1,79 @@
++// Copyright 2026 The Lynx Authors. All rights reserved.
++// Licensed under the Apache License Version 2.0 that can be found in the
++// LICENSE file in the root directory of this source tree.
++
++import type { MotionValue } from 'motion-dom';
++
++import {
++  defineMainThreadObjectType,
++  runOnMainThread,
++  useMainThreadObject,
++} from '@lynx-js/react';
++
++import { motionValue } from '../polyfill/MotionValue.js' with { runtime: 'shared' };
++
++const MOTION_VALUE_TYPE = '@lynx-js/motion/MotionValue';
++
++/** @internal */
++export const motionValueType = defineMainThreadObjectType<
++  unknown,
++  MotionValue<unknown>
++>({
++  type: MOTION_VALUE_TYPE,
++  create(initialValue) {
++    'main thread';
++    return motionValue(initialValue);
++  },
++});
++
++function setMotionValue(
++  handle: MotionValue<unknown>,
++  value: unknown,
++) {
++  'main thread';
++  handle.set(value);
++}
++
++/**
++ * Create a Motion value that is retained on the main thread and can be used
++ * directly inside main thread functions. `set()` may also be called from the
++ * background runtime and is dispatched asynchronously to the main thread.
++ *
++ * @param initialValue - Initial value of the Motion value.
++ * @public
++ */
++export function useMotionValue<T>(initialValue: T): MotionValue<T> {
++  const value = useMainThreadObject(
++    motionValueType,
++    initialValue,
++  ) as MotionValue<T>;
++  if (__BACKGROUND__ && !Object.prototype.hasOwnProperty.call(value, 'set')) {
++    // A background handle is an opaque token. `set()` is the one Motion value
++    // method that is meaningful from event handlers in the background
++    // runtime, so forward it instead of exposing the main-thread object.
++    Object.defineProperty(value, 'set', {
++      configurable: true,
++      value(next: T) {
++        void runOnMainThread(setMotionValue)(
++          value as MotionValue<unknown>,
++          next,
++        );
++      },
++    });
++  }
++  return value;
++}
++
++/** @internal */
++export function isMotionValueHandle(
++  value: unknown,
++): value is MotionValue<unknown> {
++  return motionValueType.downcast(value) !== undefined;
++}
++
++/** @internal */
++export function getMotionValueHandleInitialValue(
++  value: MotionValue<unknown>,
++): unknown {
++  return motionValueType.downcast(value)?.creationPayload;
++}
+diff --git a/packages/motion/src/index.ts b/packages/motion/src/index.ts
+index a6b708cb9..088961b3b 100644
+--- a/packages/motion/src/index.ts
++++ b/packages/motion/src/index.ts
+@@ -17,5 +17,22 @@ export {
+ } from './animation/index.js';
+ 
+ export { useMotionValueRef } from './hooks/useMotionValueRef.js';
++export { useMotionValue } from './hooks/useMotionValue.js';
++export { motion } from './declarative/motion.js';
+ 
+ export type { MotionValue } from 'motion-dom';
++export type {
++  MotionComponentProps,
++  MotionDefinition,
++  MotionFactory,
++  MotionImageProps,
++  MotionProps,
++  MotionStyle,
++  MotionStyleValue,
++  MotionTapInfo,
++  MotionTarget,
++  MotionTextProps,
++  MotionTransition,
++  MotionVariants,
++  MotionViewProps,
++} from './declarative/types.js';
+diff --git a/packages/motion/src/polyfill/element.ts b/packages/motion/src/polyfill/element.ts
+index b37a21ce8..8484f692a 100644
+--- a/packages/motion/src/polyfill/element.ts
++++ b/packages/motion/src/polyfill/element.ts
+@@ -8,6 +8,10 @@ interface StyleObject {
+   setProperty(property: string, value: string): void;
+ }
+ 
++function toCssPropertyName(name: string): string {
++  return name.replace(/[A-Z]/g, match => `-${match.toLowerCase()}`);
++}
++
+ export class ElementCompt {
+   private element: MainThread.Element;
+ 
+@@ -20,9 +24,12 @@ export class ElementCompt {
+ 
+     return new Proxy(styleObject, {
+       get: (_target, prop) => {
+-        // @ts-expect-error Expected
+-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+-        return __GetComputedStyleByKey(this.element.element, prop as string);
++        const rawElement = (this.element as unknown as { element: never })
++          .element;
++        return __GetComputedStyleByKey(
++          rawElement,
++          toCssPropertyName(prop as string),
++        );
+       },
+     });
+   }
+@@ -34,7 +41,7 @@ export class ElementCompt {
+       if (property === 'transform' && value === 'none') {
+         return this.element.setStyleProperty('transform', 'scale(1, 1)');
+       }
+-      this.element.setStyleProperty(property, value);
++      this.element.setStyleProperty(toCssPropertyName(property), value);
+     };
+     return new Proxy(styleObject, {
+       set: (target, prop, value) => {
+@@ -43,13 +50,20 @@ export class ElementCompt {
+             this.element.setStyleProperty('transform', 'scale(1, 1)');
+             return true;
+           }
+-          this.element.setStyleProperty(prop, String(value));
++          this.element.setStyleProperty(toCssPropertyName(prop), String(value));
+           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+           target[prop] = value;
+         }
+         return true;
+       },
+       get: (_target, prop) => {
++        // motion-dom writes CSS custom properties through this Web API rather
++        // than assigning them as named properties on CSSStyleDeclaration.
++        if (prop === 'setProperty') {
++          return (property: string, value: string) => {
++            styleObject.setProperty(property, value);
++          };
++        }
+         if (typeof prop === 'string' && prop !== 'setProperty') {
+           return this.getStyleProperty(prop);
+         }
+@@ -64,9 +78,11 @@ export class ElementCompt {
+ 
+   // Individual style property getters and setters
+   private getStyleProperty(name: string): string {
+-    // @ts-expect-error Expected
+-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+-    return __GetComputedStyleByKey(this.element.element, name);
++    const rawElement = (this.element as unknown as { element: never }).element;
++    return __GetComputedStyleByKey(
++      rawElement,
++      toCssPropertyName(name),
++    );
+   }
+ 
+   // Common style properties
+@@ -74,7 +90,7 @@ export class ElementCompt {
+     return this.getStyleProperty('backgroundColor');
+   }
+   set backgroundColor(value: string) {
+-    this.element.setStyleProperty('backgroundColor', value);
++    this.element.setStyleProperty('background-color', value);
+   }
+ 
+   get color(): string {
+@@ -88,7 +104,7 @@ export class ElementCompt {
+     return this.getStyleProperty('fontSize');
+   }
+   set fontSize(value: string) {
+-    this.element.setStyleProperty('fontSize', value);
++    this.element.setStyleProperty('font-size', value);
+   }
+ 
+   get width(): string {
+-- 
+2.43.0
+

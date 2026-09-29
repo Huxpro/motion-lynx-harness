@@ -62,8 +62,8 @@ const STRINGS = {
         zh: "可用子集，非直接替换级兼容",
     },
     "overview.versions": {
-        en: "Upstream source 12.40.0 · Web baseline 13.0.0",
-        zh: "上游源码 12.40.0 · Web 基线 13.0.0",
+        en: "Upstream source 13.4.5 · Web baseline 13.4.5",
+        zh: "上游源码 13.4.5 · Web 基线 13.4.5",
     },
     "overview.metricsLabel": {
         en: "Current progress metrics",
@@ -102,10 +102,10 @@ const STRINGS = {
 
     "validation.title": { en: "Current validation gates", zh: "当前验证关卡" },
     "validation.desc": {
-        en: "Current canonical stack evidence. Published conformance metrics remain pinned to immutable 013e20e until the new stack publishes a matching preview.",
-        zh: "当前标准 PR 栈证据。发布版一致性指标继续固定在不可变版本 013e20e，直到新栈产出匹配预览。",
+        en: "Current evidence is measured on lynx-stack main 4f63dfd (MainThreadObject runtime) plus the declarative Motion port 162e563, packed into lynx/vendor. The canonical PR stack below still needs to be rebased onto main.",
+        zh: "当前证据基于 lynx-stack main 4f63dfd（MainThreadObject 运行时）加声明式 Motion 移植 162e563，打包于 lynx/vendor。下方标准 PR 栈仍需变基到 main。",
     },
-    "validation.date": { en: "13 Aug 2026", zh: "2026-08-13" },
+    "validation.date": { en: "29 Sep 2026", zh: "2026-09-29" },
     "validation.pass": { en: "Pass", zh: "通过" },
     "validation.blocked": { en: "Blocked", zh: "阻塞" },
     "validation.package": { en: "Package regression", zh: "包内回归" },
@@ -286,8 +286,8 @@ const STRINGS = {
     "footer.checks": { en: "Live PR checks", zh: "实时 PR 检查" },
     "footer.motionDocs": { en: "Motion.dev docs", zh: "Motion.dev 文档" },
     "footer.upstream": {
-        en: "Upstream motion@12.40.0",
-        zh: "上游 motion@12.40.0",
+        en: "Upstream motion@13.4.5",
+        zh: "上游 motion@13.4.5",
     },
 } satisfies Record<string, Entry>
 

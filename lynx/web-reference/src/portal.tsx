@@ -13,6 +13,7 @@ import {
     CONFORMANCE_METRICS,
     GALLERY_EXAMPLES,
     PRIORITIZED_GAPS,
+    UPSTREAM_SOURCE_VERSION,
     WEIGHTED_LOSS,
     type SupportStatus,
 } from "../../src/conformance/cases.js"
@@ -1711,7 +1712,7 @@ export function EvidencePortal() {
                         {t("footer.motionDocs")}
                     </a>
                     <a
-                        href={`${UPSTREAM_REPO_URL}/tree/v12.40.0`}
+                        href={`${UPSTREAM_REPO_URL}/tree/v${UPSTREAM_SOURCE_VERSION}`}
                         target="_blank"
                         rel="noreferrer"
                     >
